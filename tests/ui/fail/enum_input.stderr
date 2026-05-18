@@ -1,0 +1,8 @@
+error: CkbWitness can only be derived for structs
+ --> tests/ui/fail/enum_input.rs:4:1
+  |
+4 | / enum MyEnum {
+5 | |     A,
+6 | |     B,
+7 | | }
+  | |_^

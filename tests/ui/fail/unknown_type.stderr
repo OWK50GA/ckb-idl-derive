@@ -1,0 +1,5 @@
+error: unrecognised type `String` for field `name`; supported types are: u8, u32, u64, [u8; 33], [u8; 64], [u8; 65], Vec<u8>
+ --> tests/ui/fail/unknown_type.rs:5:11
+  |
+5 |     name: String,
+  |           ^^^^^^
