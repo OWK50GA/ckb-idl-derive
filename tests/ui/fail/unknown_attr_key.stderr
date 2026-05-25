@@ -1,0 +1,5 @@
+error: unrecognised witness attribute key `foo`; supported keys are: required, description
+ --> tests/ui/fail/unknown_attr_key.rs:5:15
+  |
+5 |     #[witness(foo = "bar")]
+  |               ^^^

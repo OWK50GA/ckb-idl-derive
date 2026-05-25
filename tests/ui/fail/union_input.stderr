@@ -1,0 +1,8 @@
+error: CkbWitness can only be derived for structs
+ --> tests/ui/fail/union_input.rs:4:1
+  |
+4 | / union MyUnion {
+5 | |     a: u8,
+6 | |     b: u32,
+7 | | }
+  | |_^

@@ -1,0 +1,5 @@
+error: CkbWitness requires a struct with named fields
+ --> tests/ui/fail/tuple_struct.rs:4:1
+  |
+4 | struct MyTuple(u8, u32);
+  | ^^^^^^^^^^^^^^^^^^^^^^^^
