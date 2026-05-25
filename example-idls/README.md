@@ -21,6 +21,7 @@
 
 | Script | Status | Source |
 |--------|--------|--------|
+| [simple-lock](./simple-lock/) | ✅ machine-generated | https://github.com/OWK50GA/ckb_lock_script |
 | [secp256k1-timelock](./secp256k1-timelock/) | ⚠️ hand-written example | — |
 | [multisig-2of2-nonce](./multisig-2of2-nonce/) | ⚠️ hand-written example | — |
 | [schnorr-pubkey-recovery](./schnorr-pubkey-recovery/) | ⚠️ hand-written example | — |
