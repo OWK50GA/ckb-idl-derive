@@ -3,4 +3,16 @@ name = "ckb-idl-derive"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+proc-macro = true
+
 [dependencies]
+syn = { version = "2", features = ["full", "derive"] }
+quote = "1"
+proc-macro2 = "1"
+serde_json = "1"
+
+[dev-dependencies]
+proptest = "1"
+trybuild = "1"
+tempfile = "3"
