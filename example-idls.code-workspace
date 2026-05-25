@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../ckb_lock_script"
+		}
+	],
+	"settings": {}
+}
