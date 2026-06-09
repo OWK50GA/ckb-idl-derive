@@ -32,12 +32,15 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
 
             let attrs = attr::parse_field_attrs(f)?;
             let idl_type = registry::map_type(&f.ty, &field_name)?;
+            let wire_kind = registry::map_wire_kind(&f.ty)
+                .expect("map_wire_kind must succeed for any type accepted by map_type");
 
             Ok(FieldMeta {
                 name: field_name,
                 idl_type,
                 required: attrs.required,
                 description: attrs.description,
+                wire_kind,
             })
         })
         .collect::<syn::Result<Vec<_>>>()?;
@@ -50,8 +53,13 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
     // 4. Write idl.json to OUT_DIR.
     let path = io::write_idl(&json)?;
 
-    // 5. Emit the path constant.
-    Ok(codegen::emit_const(&path))
+    // 5. Emit the path constant + from_witness_args impl.
+    let const_ts = codegen::emit_const(&path);
+    let impl_ts = codegen::emit_impl(&ast.ident, &metas);
+
+    let mut out = const_ts;
+    out.extend(impl_ts);
+    Ok(out)
 }
 
 /// Public proc-macro entry point.
@@ -64,7 +72,7 @@ pub fn ckb_witness(input: TokenStream) -> TokenStream {
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// Tests
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,17 @@
 use syn::{Expr, ExprLit, GenericArgument, Lit, PathArguments, Type};
 
+/// The wire kind of a field — used by codegen to emit the correct
+/// deserialization snippet for `from_witness_args`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireKind {
+    /// Fixed-size copy type: u8, u32, u64. `size` is the byte width.
+    FixedScalar { size: usize },
+    /// Fixed-size byte array: [u8; N]. `size` is N.
+    FixedArray { size: usize },
+    /// Variable-length byte sequence: Vec<u8>. Length-prefixed on the wire.
+    VarBytes,
+}
+
 /// Maps a Rust `syn::Type` to a blessed IDL type string.
 ///
 /// `field_name` is used only for the error message when the type is unrecognised.
@@ -69,6 +81,68 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<&'static str> {
         }
 
         _ => Err(make_error(ty, field_name)),
+    }
+}
+
+/// Maps a Rust `syn::Type` to a `WireKind`, which drives deserialization
+/// code generation in `codegen::emit_impl`.
+///
+/// Returns `None` for unrecognised types (caller will have already errored
+/// via `map_type`, so this should never be reached in practice).
+pub fn map_wire_kind(ty: &Type) -> Option<WireKind> {
+    match ty {
+        Type::Path(type_path) => {
+            let segments = &type_path.path.segments;
+
+            // Vec<u8> → VarBytes
+            if let Some(last) = segments.last() {
+                if last.ident == "Vec" {
+                    if let PathArguments::AngleBracketed(ref args) = last.arguments {
+                        if args.args.len() == 1 {
+                            if let Some(GenericArgument::Type(Type::Path(inner))) =
+                                args.args.first()
+                            {
+                                if inner.path.is_ident("u8") {
+                                    return Some(WireKind::VarBytes);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Scalar primitives
+            if segments.len() == 1 {
+                match segments[0].ident.to_string().as_str() {
+                    "u8"  => return Some(WireKind::FixedScalar { size: 1 }),
+                    "u32" => return Some(WireKind::FixedScalar { size: 4 }),
+                    "u64" => return Some(WireKind::FixedScalar { size: 8 }),
+                    _ => {}
+                }
+            }
+
+            None
+        }
+
+        // [u8; N] → FixedArray { size: N }
+        Type::Array(type_array) => {
+            let elem_is_u8 = match type_array.elem.as_ref() {
+                Type::Path(p) => p.path.is_ident("u8"),
+                _ => false,
+            };
+
+            if elem_is_u8 {
+                if let Expr::Lit(ExprLit { lit: Lit::Int(n), .. }) = &type_array.len {
+                    if let Ok(size) = n.base10_parse::<usize>() {
+                        return Some(WireKind::FixedArray { size });
+                    }
+                }
+            }
+
+            None
+        }
+
+        _ => None,
     }
 }
 
