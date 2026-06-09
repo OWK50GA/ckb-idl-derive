@@ -1,0 +1,12 @@
+[package]
+name = "ckb-idl-types"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ckb-std = { version = "1.1", optional = true }
+
+[features]
+# Enable the ckb-std-backed variant of WitnessError::Load.
+# Consumer crates running on CKB must enable this feature.
+ckb-contract = ["dep:ckb-std"]
