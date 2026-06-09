@@ -1,27 +1,30 @@
 use std::path::PathBuf;
 
-/// Write `json` to `$OUT_DIR/idl.json` and return the absolute path.
+/// Write `json` to `$CARGO_MANIFEST_DIR/idl.json` and return the absolute path.
+///
+/// `CARGO_MANIFEST_DIR` is set by Cargo for every crate during proc-macro
+/// expansion — no `build.rs` is required in the consumer crate.
+///
+/// The file lands next to the crate's `Cargo.toml`, which is predictable and
+/// stable across rebuilds (unlike the hashed `OUT_DIR` path).
 ///
 /// Errors:
-/// - `OUT_DIR` not set → `"OUT_DIR environment variable is not set"`
-/// - write failure    → `"failed to write IDL file to \`<path>\`: <io::Error>"`
+/// - `CARGO_MANIFEST_DIR` not set → `"CARGO_MANIFEST_DIR environment variable is not set"`
+/// - write failure               → `"failed to write IDL file to \`<path>\`: <io::Error>"`
 pub fn write_idl(json: &str) -> syn::Result<PathBuf> {
-    let out_dir = std::env::var("OUT_DIR").map_err(|_| {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| {
         syn::Error::new(
             proc_macro2::Span::call_site(),
-            "OUT_DIR environment variable is not set",
+            "CARGO_MANIFEST_DIR environment variable is not set",
         )
     })?;
 
-    let path = PathBuf::from(out_dir).join("idl.json");
+    let path = PathBuf::from(manifest_dir).join("idl.json");
 
     std::fs::write(&path, json.as_bytes()).map_err(|e| {
         syn::Error::new(
             proc_macro2::Span::call_site(),
-            format!(
-                "failed to write IDL file to `{}`: {e}",
-                path.display()
-            ),
+            format!("failed to write IDL file to `{}`: {e}", path.display()),
         )
     })?;
 
@@ -35,32 +38,29 @@ mod tests {
     #[test]
     fn successful_write_returns_path() {
         let dir = tempfile::tempdir().expect("failed to create tempdir");
-        // Set OUT_DIR to the temp directory for this test
-        // SAFETY: single-threaded test; no other threads reading OUT_DIR concurrently.
-        unsafe { std::env::set_var("OUT_DIR", dir.path().to_str().unwrap()) };
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", dir.path().to_str().unwrap()) };
 
         let json = r#"{"witness":[]}"#;
         let result = write_idl(json);
 
-        // Restore: remove OUT_DIR so other tests aren't affected
-        unsafe { std::env::remove_var("OUT_DIR") };
+        unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") };
 
         let path = result.expect("write_idl should succeed");
         assert_eq!(path.file_name().unwrap(), "idl.json");
         assert_eq!(path.parent().unwrap(), dir.path());
 
-        // Verify the file content
         let content = std::fs::read_to_string(&path).expect("should be able to read written file");
         assert_eq!(content, json);
     }
 
     #[test]
-    fn missing_out_dir_returns_error() {
-        // Ensure OUT_DIR is not set
-        // SAFETY: single-threaded test; no other threads reading OUT_DIR concurrently.
-        unsafe { std::env::remove_var("OUT_DIR") };
+    fn missing_manifest_dir_returns_error() {
+        unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") };
 
         let err = write_idl("{}").unwrap_err();
-        assert_eq!(err.to_string(), "OUT_DIR environment variable is not set");
+        assert_eq!(
+            err.to_string(),
+            "CARGO_MANIFEST_DIR environment variable is not set"
+        );
     }
 }

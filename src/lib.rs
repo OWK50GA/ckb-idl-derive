@@ -79,14 +79,14 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// Helper: run `impl_ckb_witness` with a real temp OUT_DIR.
+    /// Helper: run `impl_ckb_witness` with a real temp CARGO_MANIFEST_DIR.
     fn run_with_tempdir(input: TokenStream2) -> syn::Result<TokenStream2> {
         let dir = tempfile::tempdir().expect("failed to create tempdir");
         // SAFETY: tests in this module run single-threaded (no parallel test
-        // threads share OUT_DIR at the same time for this crate's test binary).
-        unsafe { std::env::set_var("OUT_DIR", dir.path().to_str().unwrap()) };
+        // threads share CARGO_MANIFEST_DIR at the same time for this crate's test binary).
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", dir.path().to_str().unwrap()) };
         let result = impl_ckb_witness(input);
-        unsafe { std::env::remove_var("OUT_DIR") };
+        unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") };
         // Keep `dir` alive until after the call so the path is valid.
         drop(dir);
         result
