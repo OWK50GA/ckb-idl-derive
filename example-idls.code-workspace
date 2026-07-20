@@ -5,6 +5,12 @@
 		},
 		{
 			"path": "../ckb_lock_script"
+		},
+		{
+			"path": "../ckb-idl-client"
+		},
+		{
+			"path": "../learning-ckb"
 		}
 	],
 	"settings": {}
