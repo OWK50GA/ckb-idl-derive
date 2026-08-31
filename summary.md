@@ -219,3 +219,70 @@ The current `from_witness_args` decoder returns `WitnessError::TrailingBytes` if
 **8. Single Witness Source (`lock` Field Only)**
 
 `from_witness_args` always reads from the `lock()` field of `WitnessArgs`. CKB transactions have three witness fields: `lock`, `input_type`, and `output_type`. Scripts that use `input_type` or `output_type` witnesses — type scripts, for instance — cannot use the generated deserializer without modification. A `#[witness(source = "input_type")]` attribute or a parameter on the generated method would cover this without requiring structural changes to the macro.
+
+---
+
+## Week 5: Community Publishing, Registry Collaboration, and TypeScript Planning
+
+This week shifted from implementation to communication and ecosystem positioning. The two Rust crates (`ckb-idl-derive` and `ckb-idl-client`) are now publicly documented and presented to the Nervos community. The most significant development was establishing a collaboration that resolves the biggest missing piece in the system: the IDL registry.
+
+### Published the Nervos Talk Post
+
+The project was formally introduced to the Nervos community via a post on Nervos Talk: [LS-IDL: a Lock Script Interface Description Language for CKB (derive, validate, commit)](https://talk.nervos.org/t/ls-idl-a-lock-script-interface-description-language-for-ckb-derive-validate-commit/10596).
+
+The post covered:
+
+- The core problem: CKB lock scripts have no machine-readable witness interface, so wallets and transaction builders either have out-of-band knowledge of the format or they guess, with failures only surfacing on-chain.
+- The two-crate design: `ckb-idl-derive` (script side — proc macro, IDL generation, runtime deserializer) and `ckb-idl-client` (tooling side — IDL commitment verification, structural witness validation).
+- The wire format and commitment scheme.
+- Known limitations honestly stated: no `[u8; 32]` support, wire encoding not recorded in the IDL, no Molecule support, `required = false` runtime enforcement missing, no registry yet.
+- Open design questions directed at the community: registry design, type registry scope, TypeScript priority.
+
+The post received 61 views in the first four days and was linked in the CKB Ecosystem Biweekly Update.
+
+### Registry Collaboration Established
+
+The previously identified gap — no live registry endpoint — has a path forward. ArthurZhang, who is independently building a script registry for the CKB ecosystem, has agreed to support the IDL system: the registry will store IDL documents alongside code cells, queryable by code hash, matching the interface that `ckb-idl-client`'s `fetch` method already expects:
+
+```
+GET {indexer_url}/idl/{code_hash_hex}  →  IdlDocument JSON
+```
+
+This means the `ckb-idl-client` fetch path, which was built speculatively against an unbuilt endpoint, now has a concrete registry to target. The IDL commitment verification (`sha256(idl.json) == code_cell_data[-32:]`) remains the trust anchor regardless of which registry serves the file — a client never needs to trust the registry operator.
+
+This collaboration removes the registry gap from the "blocked" category. The immediate implications:
+
+- The fetch flow can be tested against a real endpoint rather than local file loading.
+- The TypeScript client implementation can be written against a live registry from the start, rather than being designed around local-only usage.
+
+### CKBuilder GitHub Issue (In Progress)
+
+Work began on the CKBuilder project tracking issue, following the structure of existing issues in the repository. The issue documents current status, what is built, what is missing, and what community input is needed. It has not been finalised yet — open items include confirming the exact repository links and deciding how to frame the registry dependency now that the ArthurZhang collaboration is in place.
+
+### Next: TypeScript Client Implementation
+
+The next implementation milestone is a TypeScript client for `ckb-idl-client`. The 16 canonical test vectors in `test-vectors.json` serve as the normative specification — the TypeScript implementation must produce identical decode results for every vector. The Rust implementation is the reference; the TypeScript implementation will be verified against it.
+
+The implementation scope:
+
+1. Wire format decoder: field-by-field decode matching the Rust `validate_witness_bytes` logic — `uint8`, `uint32`, `uint64`, fixed arrays (`secp256k1_sig`, `secp256k1_pubkey`, `schnorr_sig`), and length-prefixed `bytes`.
+2. IDL commitment verification: `sha256(idl_json) === code_cell_data.slice(-32)`.
+3. Test vector runner: load `test-vectors.json` and assert every `valid`/`error` case matches.
+
+The registry collaboration means the TypeScript client can also implement the live fetch path from the start rather than treating it as a future concern.
+
+---
+
+### Challenges
+
+**1. Framing the Registry Dependency Accurately**
+
+With the ArthurZhang collaboration confirmed, the project's status changed mid-week: the registry is no longer purely a gap but a planned integration with a concrete counterpart. This required updating how the limitation is described — the honest framing is now "the registry is under development by a collaborator; the client already implements the fetch interface" rather than "no registry exists."
+
+**2. GitHub Issue Scope**
+
+The CKBuilder issue format requires deciding what to ask for from the community vs. what is already in progress internally. With the registry resolved through collaboration, the remaining open questions are more focused: type registry extensibility, Molecule support, and TypeScript adoption. The issue draft needs to reflect the current state without overstating what is still missing.
+
+**3. TypeScript Implementation Starting Point**
+
+The TypeScript ecosystem for CKB uses CCC (Common Chain Connector) for transaction building. The IDL client needs to fit into that world — returning validated witness field descriptions that CCC transaction builders can consume. The exact integration surface between `ckb-idl-client` TypeScript and CCC is not yet defined and will be the first design decision of the implementation phase.
