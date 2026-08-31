@@ -11,6 +11,9 @@
 		},
 		{
 			"path": "../learning-ckb"
+		},
+		{
+			"path": "../idl-derive-ts"
 		}
 	],
 	"settings": {}
