@@ -32,7 +32,14 @@ pub struct FieldMeta {
 ///
 /// Produces:
 /// ```json
-/// { "witness": [ { "name": "...", "type": "...", "required": true/false }, ... ] }
+/// {
+///   "idl_version": "1",
+///   "encoding": {
+///     "variable_length_prefix": { "width": 4, "endian": "little" },
+///     "optional_fields": "trailing_exhaustion"
+///   },
+///   "witness": [ { "name": "...", "type": "...", "required": true/false }, ... ]
+/// }
 /// ```
 /// The `"description"` key is included only when `Some`.
 /// Field order matches the input slice order.
@@ -53,7 +60,14 @@ pub fn build_idl(fields: &[FieldMeta]) -> Value {
         })
         .collect();
 
-    json!({ "witness": array })
+    json!({
+        "idl_version": "1",
+        "encoding": {
+            "variable_length_prefix": { "width": 4, "endian": "little" },
+            "optional_fields": "trailing_exhaustion"
+        },
+        "witness": array
+    })
 }
 
 /// Emit a `pub const _CKB_WITNESS_IDL_PATH: &str = "<path>";` token stream.
@@ -405,6 +419,20 @@ mod tests {
     }
 
     #[test]
+    fn top_level_idl_version_is_one() {
+        let idl = build_idl(&[]);
+        assert_eq!(idl["idl_version"].as_str().unwrap(), "1");
+    }
+
+    #[test]
+    fn top_level_encoding_block_is_present() {
+        let idl = build_idl(&[]);
+        assert_eq!(idl["encoding"]["variable_length_prefix"]["width"].as_u64().unwrap(), 4);
+        assert_eq!(idl["encoding"]["variable_length_prefix"]["endian"].as_str().unwrap(), "little");
+        assert_eq!(idl["encoding"]["optional_fields"].as_str().unwrap(), "trailing_exhaustion");
+    }
+
+    #[test]
     fn field_count_matches_input() {
         let fields = vec![
             make_field("a", "uint8", true, None, WireKind::FixedScalar { size: 1 }),
@@ -588,6 +616,13 @@ mod tests {
         ) {
             let n = fields.len();
             let idl = build_idl(&fields);
+
+            // Top-level shape
+            prop_assert_eq!(idl["idl_version"].as_str().unwrap(), "1");
+            prop_assert_eq!(idl["encoding"]["variable_length_prefix"]["width"].as_u64().unwrap(), 4);
+            prop_assert_eq!(idl["encoding"]["variable_length_prefix"]["endian"].as_str().unwrap(), "little");
+            prop_assert_eq!(idl["encoding"]["optional_fields"].as_str().unwrap(), "trailing_exhaustion");
+
             let arr = idl["witness"].as_array()
                 .expect("\"witness\" must be a JSON array");
 
