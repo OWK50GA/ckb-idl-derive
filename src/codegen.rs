@@ -2,7 +2,7 @@ use std::path::Path;
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::registry::WireKind;
 
@@ -10,14 +10,25 @@ use crate::registry::WireKind;
 #[derive(Debug)]
 pub struct FieldMeta {
     pub name: String,
-    pub idl_type: &'static str,
+    /// Structural IDL type derived from the Rust type (e.g. `"bytes_fixed_65"`, `"uint64"`).
+    pub idl_type: String,
     pub required: bool,
     pub description: Option<String>,
+    /// Optional semantic label supplied via `#[witness(type = "...")]`.
+    ///
+    /// When `Some`, this overrides `idl_type` in the generated IDL JSON.
+    /// The wire encoding is always driven by `wire_kind` — the label is
+    /// purely descriptive and does not affect runtime behaviour.
+    pub type_override: Option<String>,
     /// How this field is encoded on the wire — drives `from_witness_args` codegen.
     pub wire_kind: WireKind,
 }
 
 /// Build the IDL JSON value from a slice of field metadata.
+///
+/// The `"type"` value in each field object is:
+/// - `field.type_override` if present (user-supplied semantic label), or
+/// - `field.idl_type` otherwise (structural default, e.g. `"bytes_fixed_65"`).
 ///
 /// Produces:
 /// ```json
@@ -29,9 +40,10 @@ pub fn build_idl(fields: &[FieldMeta]) -> Value {
     let array: Vec<Value> = fields
         .iter()
         .map(|f| {
+            let type_str = f.type_override.as_deref().unwrap_or(f.idl_type.as_str());
             let mut obj = json!({
                 "name": f.name,
-                "type": f.idl_type,
+                "type": type_str,
                 "required": f.required,
             });
             if let Some(desc) = &f.description {
@@ -86,6 +98,21 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                     };
                 },
 
+                WireKind::FixedScalar { size: 2 } => quote! {
+                    let #ident: u16 = {
+                        if cursor + 2 > buf.len() {
+                            return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                field: #name_str,
+                                expected: 2,
+                                got: buf.len().saturating_sub(cursor),
+                            });
+                        }
+                        let v = u16::from_le_bytes(buf[cursor..cursor + 2].try_into().unwrap());
+                        cursor += 2;
+                        v
+                    }
+                },
+
                 WireKind::FixedScalar { size: 4 } => quote! {
                     let #ident: u32 = {
                         if cursor + 4 > buf.len() {
@@ -114,6 +141,21 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                         cursor += 8;
                         v
                     };
+                },
+
+                WireKind::FixedScalar { size: 16 } => quote! {
+                    let #ident: u128 = {
+                        if cursor + 16 > buf.len() {
+                            return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                field: #name_str,
+                                expected: 16,
+                                got: buf.len().saturating_sub(cursor),
+                            });
+                        }
+                        let v = u128::from_le_bytes(buf[cursor..cursor + 16].try_into().unwrap());
+                        cursor += 16;
+                        v
+                    }
                 },
 
                 WireKind::FixedScalar { size: _ } => {
@@ -167,10 +209,7 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
         .collect();
 
     // Identifiers for the struct construction expression.
-    let field_idents: Vec<_> = fields
-        .iter()
-        .map(|f| format_ident!("{}", f.name))
-        .collect();
+    let field_idents: Vec<_> = fields.iter().map(|f| format_ident!("{}", f.name)).collect();
 
     quote! {
         impl #struct_name {
@@ -222,16 +261,33 @@ mod tests {
 
     fn make_field(
         name: &str,
-        idl_type: &'static str,
+        idl_type: &str,
         required: bool,
         description: Option<&str>,
         wire_kind: WireKind,
     ) -> FieldMeta {
         FieldMeta {
             name: name.to_string(),
-            idl_type,
+            idl_type: idl_type.to_string(),
             required,
             description: description.map(|s| s.to_string()),
+            type_override: None,
+            wire_kind,
+        }
+    }
+
+    fn make_field_with_override(
+        name: &str,
+        idl_type: &str,
+        type_override: &str,
+        wire_kind: WireKind,
+    ) -> FieldMeta {
+        FieldMeta {
+            name: name.to_string(),
+            idl_type: idl_type.to_string(),
+            required: true,
+            description: None,
+            type_override: Some(type_override.to_string()),
             wire_kind,
         }
     }
@@ -242,7 +298,7 @@ mod tests {
     fn top_level_witness_key_is_array() {
         let idl = build_idl(&[make_field(
             "sig",
-            "secp256k1_sig",
+            "bytes_fixed_65",
             true,
             None,
             WireKind::FixedArray { size: 65 },
@@ -254,21 +310,37 @@ mod tests {
     fn field_count_matches_input() {
         let fields = vec![
             make_field("a", "uint8", true, None, WireKind::FixedScalar { size: 1 }),
-            make_field("b", "uint32", false, None, WireKind::FixedScalar { size: 4 }),
+            make_field(
+                "b",
+                "uint32",
+                false,
+                None,
+                WireKind::FixedScalar { size: 4 },
+            ),
             make_field("c", "bytes", true, Some("blob"), WireKind::VarBytes),
         ];
-        let idl = build_idl(&fields);
-        assert_eq!(idl["witness"].as_array().unwrap().len(), 3);
+        assert_eq!(build_idl(&fields)["witness"].as_array().unwrap().len(), 3);
     }
 
     #[test]
     fn field_order_matches_input() {
         let fields = vec![
-            make_field("first", "uint8", true, None, WireKind::FixedScalar { size: 1 }),
-            make_field("second", "uint64", false, None, WireKind::FixedScalar { size: 8 }),
+            make_field(
+                "first",
+                "uint8",
+                true,
+                None,
+                WireKind::FixedScalar { size: 1 },
+            ),
+            make_field(
+                "second",
+                "uint64",
+                false,
+                None,
+                WireKind::FixedScalar { size: 8 },
+            ),
         ];
-        let idl = build_idl(&fields);
-        let arr = idl["witness"].as_array().unwrap();
+        let arr = build_idl(&fields)["witness"].as_array().unwrap().clone();
         assert_eq!(arr[0]["name"], "first");
         assert_eq!(arr[1]["name"], "second");
     }
@@ -282,8 +354,7 @@ mod tests {
             None,
             WireKind::FixedScalar { size: 1 },
         )]);
-        let obj = &idl["witness"][0];
-        assert!(obj.get("description").is_none());
+        assert!(idl["witness"][0].get("description").is_none());
     }
 
     #[test]
@@ -295,29 +366,100 @@ mod tests {
             Some("my desc"),
             WireKind::FixedScalar { size: 1 },
         )]);
-        let obj = &idl["witness"][0];
-        assert_eq!(obj["description"], "my desc");
+        assert_eq!(idl["witness"][0]["description"], "my desc");
     }
 
     #[test]
     fn empty_fields_produces_empty_array() {
-        let idl = build_idl(&[]);
-        assert_eq!(idl["witness"].as_array().unwrap().len(), 0);
+        assert_eq!(build_idl(&[])["witness"].as_array().unwrap().len(), 0);
+    }
+
+    // ── type_override tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn type_override_replaces_structural_type_in_idl() {
+        let idl = build_idl(&[make_field_with_override(
+            "sig",
+            "bytes_fixed_65",
+            "secp256k1_sig",
+            WireKind::FixedArray { size: 65 },
+        )]);
+        // IDL should show the semantic label, not the structural default.
+        assert_eq!(idl["witness"][0]["type"], "secp256k1_sig");
+    }
+
+    #[test]
+    fn no_override_uses_structural_type() {
+        let idl = build_idl(&[make_field(
+            "sig",
+            "bytes_fixed_65",
+            true,
+            None,
+            WireKind::FixedArray { size: 65 },
+        )]);
+        assert_eq!(idl["witness"][0]["type"], "bytes_fixed_65");
+    }
+
+    #[test]
+    fn type_override_arbitrary_label() {
+        let idl = build_idl(&[make_field_with_override(
+            "proof",
+            "bytes_fixed_32",
+            "my_custom_proof",
+            WireKind::FixedArray { size: 32 },
+        )]);
+        assert_eq!(idl["witness"][0]["type"], "my_custom_proof");
+    }
+
+    #[test]
+    fn type_override_does_not_affect_wire_kind() {
+        // Both fields have [u8; 64] wire encoding regardless of label.
+        let fields = vec![
+            make_field_with_override(
+                "a",
+                "bytes_fixed_64",
+                "schnorr_sig",
+                WireKind::FixedArray { size: 64 },
+            ),
+            make_field_with_override(
+                "b",
+                "bytes_fixed_64",
+                "bls12_381_half",
+                WireKind::FixedArray { size: 64 },
+            ),
+        ];
+        let idl = build_idl(&fields);
+        assert_eq!(idl["witness"][0]["type"], "schnorr_sig");
+        assert_eq!(idl["witness"][1]["type"], "bls12_381_half");
+        // wire_kind is unchanged — both would decode 64 bytes identically.
     }
 
     // ── Property tests ────────────────────────────────────────────────────────
 
     use proptest::prelude::*;
 
-    fn arb_idl_type() -> impl Strategy<Value = (&'static str, WireKind)> {
+    fn arb_idl_type() -> impl Strategy<Value = (String, WireKind)> {
         prop_oneof![
-            Just(("uint8",           WireKind::FixedScalar { size: 1 })),
-            Just(("uint32",          WireKind::FixedScalar { size: 4 })),
-            Just(("uint64",          WireKind::FixedScalar { size: 8 })),
-            Just(("secp256k1_sig",   WireKind::FixedArray  { size: 65 })),
-            Just(("secp256k1_pubkey",WireKind::FixedArray  { size: 33 })),
-            Just(("schnorr_sig",     WireKind::FixedArray  { size: 64 })),
-            Just(("bytes",           WireKind::VarBytes)),
+            Just(("uint8".to_string(), WireKind::FixedScalar { size: 1 })),
+            Just(("uint32".to_string(), WireKind::FixedScalar { size: 4 })),
+            Just(("uint64".to_string(), WireKind::FixedScalar { size: 8 })),
+            Just((
+                "bytes_fixed_65".to_string(),
+                WireKind::FixedArray { size: 65 }
+            )),
+            Just((
+                "bytes_fixed_33".to_string(),
+                WireKind::FixedArray { size: 33 }
+            )),
+            Just((
+                "bytes_fixed_64".to_string(),
+                WireKind::FixedArray { size: 64 }
+            )),
+            Just((
+                "bytes_fixed_32".to_string(),
+                WireKind::FixedArray { size: 32 }
+            )),
+            Just(("bytes".to_string(), WireKind::VarBytes)),
         ]
     }
 
@@ -327,14 +469,18 @@ mod tests {
             arb_idl_type(),
             any::<bool>(),
             proptest::option::of("[^\x00]{1,64}"),
+            proptest::option::of("[a-z][a-z0-9_]{0,20}"),
         )
-            .prop_map(|(name, (idl_type, wire_kind), required, description)| FieldMeta {
-                name,
-                idl_type,
-                required,
-                description,
-                wire_kind,
-            })
+            .prop_map(
+                |(name, (idl_type, wire_kind), required, description, type_override)| FieldMeta {
+                    name,
+                    idl_type,
+                    required,
+                    description,
+                    type_override,
+                    wire_kind,
+                },
+            )
     }
 
     proptest! {
@@ -344,17 +490,21 @@ mod tests {
         ) {
             let n = fields.len();
             let idl = build_idl(&fields);
-
             let arr = idl["witness"].as_array()
                 .expect("\"witness\" must be a JSON array");
 
             prop_assert_eq!(arr.len(), n);
 
             for (i, (elem, field)) in arr.iter().zip(fields.iter()).enumerate() {
-                prop_assert!(elem["name"].is_string(),   "element {i} missing string \"name\"");
-                prop_assert!(elem["type"].is_string(),   "element {i} missing string \"type\"");
+                prop_assert!(elem["name"].is_string(),      "element {i} missing string \"name\"");
+                prop_assert!(elem["type"].is_string(),      "element {i} missing string \"type\"");
                 prop_assert!(elem["required"].is_boolean(), "element {i} missing boolean \"required\"");
                 prop_assert_eq!(elem["name"].as_str().unwrap(), field.name.as_str());
+
+                // type must be the override when present, structural otherwise
+                let expected_type = field.type_override.as_deref()
+                    .unwrap_or(field.idl_type.as_str());
+                prop_assert_eq!(elem["type"].as_str().unwrap(), expected_type);
             }
         }
 
@@ -370,9 +520,10 @@ mod tests {
                 .enumerate()
                 .map(|(i, (req, desc))| FieldMeta {
                     name: format!("field_{i}"),
-                    idl_type: "uint8",
+                    idl_type: "uint8".to_string(),
                     required: *req,
                     description: desc.clone(),
+                    type_override: None,
                     wire_kind: WireKind::FixedScalar { size: 1 },
                 })
                 .collect();
@@ -389,18 +540,19 @@ mod tests {
         fn prop2_description_round_trip(desc in "[^\x00]{1,128}") {
             let fields = vec![FieldMeta {
                 name: "x".to_string(),
-                idl_type: "uint8",
+                idl_type: "uint8".to_string(),
                 required: true,
                 description: Some(desc.clone()),
+                type_override: None,
                 wire_kind: WireKind::FixedScalar { size: 1 },
             }];
 
-            let idl = build_idl(&fields);
-            let got = idl["witness"][0]["description"]
+            let got = build_idl(&fields)["witness"][0]["description"]
                 .as_str()
-                .expect("description must be a string");
+                .expect("description must be a string")
+                .to_string();
 
-            prop_assert_eq!(got, desc.as_str());
+            prop_assert_eq!(got, desc);
         }
 
         #[test]
@@ -408,9 +560,9 @@ mod tests {
             fields in proptest::collection::vec(arb_field_meta(), 0..=20)
         ) {
             let idl = build_idl(&fields);
-            let first  = serde_json::to_string(&idl).expect("first serialisation must succeed");
+            let first    = serde_json::to_string(&idl).expect("first serialisation must succeed");
             let reparsed: serde_json::Value = serde_json::from_str(&first).expect("re-parse must succeed");
-            let second = serde_json::to_string(&reparsed).expect("second serialisation must succeed");
+            let second   = serde_json::to_string(&reparsed).expect("second serialisation must succeed");
             prop_assert_eq!(&first, &second);
         }
 

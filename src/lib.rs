@@ -40,6 +40,7 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
                 idl_type,
                 required: attrs.required,
                 description: attrs.description,
+                type_override: attrs.type_override,
                 wire_kind,
             })
         })
@@ -133,7 +134,6 @@ mod tests {
             let input: TokenStream2 = quote::quote! {
                 struct #struct_ident { #fields_ts }
             };
-
             let ts = run_with_tempdir(input).expect("impl_ckb_witness should succeed");
             let ts_str = ts.to_string();
 
