@@ -32,12 +32,12 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
             if let Some(last) = segments.last() {
                 if last.ident == "Vec" {
                     if let PathArguments::AngleBracketed(ref args) = last.arguments
-                    && args.args.len() == 1
-                    && let Some(GenericArgument::Type(Type::Path(inner))) = args.args.first()
-                    && inner.path.is_ident("u8")
-                        {
-                            return Ok("bytes".to_string());
-                        }
+                        && args.args.len() == 1
+                        && let Some(GenericArgument::Type(Type::Path(inner))) = args.args.first()
+                        && inner.path.is_ident("u8")
+                    {
+                        return Ok("bytes".to_string());
+                    }
                 } else if last.ident == "Option" {
                     // Option<T> — delegate to the inner type.
                     // The IDL type string is identical to T's; the Optional
@@ -49,7 +49,6 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
                         return map_type(inner_ty, field_name);
                     }
                 }
-
             }
 
             // Check for single-segment primitives
@@ -355,7 +354,10 @@ mod tests {
 
     #[test]
     fn option_array_maps_to_bytes_fixed_idl_type() {
-        assert_eq!(map_type(&parse("Option<[u8; 32]>"), "f").unwrap(), "bytes_fixed_32");
+        assert_eq!(
+            map_type(&parse("Option<[u8; 32]>"), "f").unwrap(),
+            "bytes_fixed_32"
+        );
     }
 
     #[test]
@@ -375,7 +377,9 @@ mod tests {
     fn option_array_wire_kind() {
         assert_eq!(
             map_wire_kind(&parse("Option<[u8; 32]>")),
-            Some(WireKind::Optional(Box::new(WireKind::FixedArray { size: 32 })))
+            Some(WireKind::Optional(Box::new(WireKind::FixedArray {
+                size: 32
+            })))
         );
     }
 
@@ -383,7 +387,9 @@ mod tests {
     fn option_u64_wire_kind() {
         assert_eq!(
             map_wire_kind(&parse("Option<u64>")),
-            Some(WireKind::Optional(Box::new(WireKind::FixedScalar { size: 8 })))
+            Some(WireKind::Optional(Box::new(WireKind::FixedScalar {
+                size: 8
+            })))
         );
     }
 
@@ -391,7 +397,9 @@ mod tests {
     fn option_u8_wire_kind() {
         assert_eq!(
             map_wire_kind(&parse("Option<u8>")),
-            Some(WireKind::Optional(Box::new(WireKind::FixedScalar { size: 1 })))
+            Some(WireKind::Optional(Box::new(WireKind::FixedScalar {
+                size: 1
+            })))
         );
     }
 }
