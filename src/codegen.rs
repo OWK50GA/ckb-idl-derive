@@ -276,8 +276,15 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                     },
                     WireKind::FixedScalar { size: 2 } => quote! {
                         let #ident: ::core::option::Option<u16> = {
-                            if cursor + 2 > buf.len() { ::core::option::Option::None }
-                            else {
+                            if cursor >= buf.len() {
+                                ::core::option::Option::None
+                            } else if cursor + 2 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                    field: #name_str,
+                                    expected: 2,
+                                    got: buf.len().saturating_sub(cursor),
+                                });
+                            } else {
                                 let v = u16::from_le_bytes(buf[cursor..cursor+2].try_into().unwrap());
                                 cursor += 2;
                                 ::core::option::Option::Some(v)
@@ -286,8 +293,15 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                     },
                     WireKind::FixedScalar { size: 4 } => quote! {
                         let #ident: ::core::option::Option<u32> = {
-                            if cursor + 4 > buf.len() { ::core::option::Option::None }
-                            else {
+                            if cursor >= buf.len() {
+                                ::core::option::Option::None
+                            } else if cursor + 4 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                    field: #name_str,
+                                    expected: 4,
+                                    got: buf.len().saturating_sub(cursor),
+                                });
+                            } else {
                                 let v = u32::from_le_bytes(buf[cursor..cursor+4].try_into().unwrap());
                                 cursor += 4;
                                 ::core::option::Option::Some(v)
@@ -296,8 +310,15 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                     },
                     WireKind::FixedScalar { size: 8 } => quote! {
                         let #ident: ::core::option::Option<u64> = {
-                            if cursor + 8 > buf.len() { ::core::option::Option::None }
-                            else {
+                            if cursor >= buf.len() {
+                                ::core::option::Option::None
+                            } else if cursor + 8 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                    field: #name_str,
+                                    expected: 8,
+                                    got: buf.len().saturating_sub(cursor),
+                                });
+                            } else {
                                 let v = u64::from_le_bytes(buf[cursor..cursor+8].try_into().unwrap());
                                 cursor += 8;
                                 ::core::option::Option::Some(v)
@@ -306,8 +327,15 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                     },
                     WireKind::FixedScalar { size: 16 } => quote! {
                         let #ident: ::core::option::Option<u128> = {
-                            if cursor + 16 > buf.len() { ::core::option::Option::None }
-                            else {
+                            if cursor >= buf.len() {
+                                ::core::option::Option::None
+                            } else if cursor + 16 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                    field: #name_str,
+                                    expected: 16,
+                                    got: buf.len().saturating_sub(cursor),
+                                });
+                            } else {
                                 let v = u128::from_le_bytes(buf[cursor..cursor+16].try_into().unwrap());
                                 cursor += 16;
                                 ::core::option::Option::Some(v)
@@ -427,9 +455,22 @@ mod tests {
     #[test]
     fn top_level_encoding_block_is_present() {
         let idl = build_idl(&[]);
-        assert_eq!(idl["encoding"]["variable_length_prefix"]["width"].as_u64().unwrap(), 4);
-        assert_eq!(idl["encoding"]["variable_length_prefix"]["endian"].as_str().unwrap(), "little");
-        assert_eq!(idl["encoding"]["optional_fields"].as_str().unwrap(), "trailing_exhaustion");
+        assert_eq!(
+            idl["encoding"]["variable_length_prefix"]["width"]
+                .as_u64()
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            idl["encoding"]["variable_length_prefix"]["endian"]
+                .as_str()
+                .unwrap(),
+            "little"
+        );
+        assert_eq!(
+            idl["encoding"]["optional_fields"].as_str().unwrap(),
+            "trailing_exhaustion"
+        );
     }
 
     #[test]
