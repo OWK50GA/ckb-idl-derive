@@ -2,7 +2,7 @@ use syn::{Expr, ExprLit, GenericArgument, Lit, PathArguments, Type};
 
 /// The wire kind of a field — used by codegen to emit the correct
 /// deserialization snippet for `from_witness_args`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireKind {
     /// Fixed-size copy type: u8, u16, u32, u64, u128. `size` is the byte width.
     FixedScalar { size: usize },
@@ -10,6 +10,9 @@ pub enum WireKind {
     FixedArray { size: usize },
     /// Variable-length byte sequence: Vec<u8>. Length-prefixed on the wire.
     VarBytes,
+    /// Optional field: Option<T>. The inner WireKind describes T.
+    /// Decodes as None when the remaining buffer is exhausted, Some(T) otherwise.
+    Optional(Box<WireKind>),
 }
 
 /// Maps a Rust `syn::Type` to a structural IDL type string.
@@ -26,14 +29,27 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
             let segments = &type_path.path.segments;
 
             // Check for Vec<u8>
-            if let Some(last) = segments.last()
-                && last.ident == "Vec"
-                && let PathArguments::AngleBracketed(ref args) = last.arguments
-                && args.args.len() == 1
-                && let Some(GenericArgument::Type(Type::Path(inner))) = args.args.first()
-                && inner.path.is_ident("u8")
-            {
-                return Ok("bytes".to_string());
+            if let Some(last) = segments.last() {
+                if last.ident == "Vec" {
+                    if let PathArguments::AngleBracketed(ref args) = last.arguments
+                    && args.args.len() == 1
+                    && let Some(GenericArgument::Type(Type::Path(inner))) = args.args.first()
+                    && inner.path.is_ident("u8")
+                        {
+                            return Ok("bytes".to_string());
+                        }
+                } else if last.ident == "Option" {
+                    // Option<T> — delegate to the inner type.
+                    // The IDL type string is identical to T's; the Optional
+                    // wrapper is carried in WireKind, not in the type string.
+                    if let PathArguments::AngleBracketed(ref args) = last.arguments
+                        && args.args.len() == 1
+                        && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
+                    {
+                        return map_type(inner_ty, field_name);
+                    }
+                }
+
             }
 
             // Check for single-segment primitives
@@ -98,6 +114,16 @@ pub fn map_wire_kind(ty: &Type) -> Option<WireKind> {
                 return Some(WireKind::VarBytes);
             }
 
+            // Option<T> → Optional(inner WireKind)
+            if let Some(last) = segments.last()
+                && last.ident == "Option"
+                && let PathArguments::AngleBracketed(ref args) = last.arguments
+                && args.args.len() == 1
+                && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
+            {
+                return map_wire_kind(inner_ty).map(|k| WireKind::Optional(Box::new(k)));
+            }
+
             // Scalar primitives
             if segments.len() == 1 {
                 match segments[0].ident.to_string().as_str() {
@@ -140,7 +166,7 @@ fn make_error(ty: &Type, field_name: &str) -> syn::Error {
     let type_str = quote::quote!(#ty).to_string();
     let msg = format!(
         "unrecognised type `{type_str}` for field `{field_name}`; \
-         supported types are: u8, u16, u32, u64, u128, [u8; N] for any N, Vec<u8>"
+         supported types are: u8, u16, u32, u64, u128, [u8; N] for any N, Vec<u8>, Option<T>"
     );
     syn::Error::new_spanned(ty, msg)
 }
@@ -317,5 +343,55 @@ mod tests {
     #[test]
     fn wire_kind_vec_u8() {
         assert_eq!(map_wire_kind(&parse("Vec<u8>")), Some(WireKind::VarBytes));
+    }
+
+    // ── Option<T> tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn option_vec_u8_maps_to_bytes_idl_type() {
+        // IDL type is the same as the inner type
+        assert_eq!(map_type(&parse("Option<Vec<u8>>"), "f").unwrap(), "bytes");
+    }
+
+    #[test]
+    fn option_array_maps_to_bytes_fixed_idl_type() {
+        assert_eq!(map_type(&parse("Option<[u8; 32]>"), "f").unwrap(), "bytes_fixed_32");
+    }
+
+    #[test]
+    fn option_u64_maps_to_uint64_idl_type() {
+        assert_eq!(map_type(&parse("Option<u64>"), "f").unwrap(), "uint64");
+    }
+
+    #[test]
+    fn option_vec_u8_wire_kind() {
+        assert_eq!(
+            map_wire_kind(&parse("Option<Vec<u8>>")),
+            Some(WireKind::Optional(Box::new(WireKind::VarBytes)))
+        );
+    }
+
+    #[test]
+    fn option_array_wire_kind() {
+        assert_eq!(
+            map_wire_kind(&parse("Option<[u8; 32]>")),
+            Some(WireKind::Optional(Box::new(WireKind::FixedArray { size: 32 })))
+        );
+    }
+
+    #[test]
+    fn option_u64_wire_kind() {
+        assert_eq!(
+            map_wire_kind(&parse("Option<u64>")),
+            Some(WireKind::Optional(Box::new(WireKind::FixedScalar { size: 8 })))
+        );
+    }
+
+    #[test]
+    fn option_u8_wire_kind() {
+        assert_eq!(
+            map_wire_kind(&parse("Option<u8>")),
+            Some(WireKind::Optional(Box::new(WireKind::FixedScalar { size: 1 })))
+        );
     }
 }
