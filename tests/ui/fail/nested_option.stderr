@@ -1,0 +1,5 @@
+error: nested `Option<Option<T>>` is not supported for field `extra`; use `Option<T>` directly
+ --> tests/ui/fail/nested_option.rs:6:12
+  |
+6 |     extra: Option<Option<Vec<u8>>>,
+  |            ^^^^^^^^^^^^^^^^^^^^^^^

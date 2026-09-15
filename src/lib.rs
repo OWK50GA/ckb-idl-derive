@@ -67,6 +67,32 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
         })
         .collect::<syn::Result<Vec<_>>>()?;
 
+    // 2b. Ordering check: Optional fields must come after all required fields.
+    // The buffer-exhaustion convention used to decode None only works when
+    // there are no required fields after the optional ones.
+    let mut seen_optional = false;
+    for meta in &metas {
+        let is_opt = matches!(meta.wire_kind, registry::WireKind::Optional(_));
+        if is_opt {
+            seen_optional = true;
+        } else if seen_optional {
+            // Find the field syn node to attach the span to.
+            let offending = fields_named
+                .named
+                .iter()
+                .find(|f| f.ident.as_ref().map(|i| i.to_string()).as_deref() == Some(&meta.name))
+                .expect("field must exist");
+            return Err(syn::Error::new_spanned(
+                &offending.ty,
+                format!(
+                    "required field `{}` appears after an optional field; \
+                     all `Option<T>` fields must come last in the struct",
+                    meta.name
+                ),
+            ));
+        }
+    }
+
     // 3. Build IDL JSON and serialise.
     let idl = codegen::build_idl(&metas);
     let json =

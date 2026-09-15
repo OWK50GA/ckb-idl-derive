@@ -42,10 +42,29 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
                     // Option<T> — delegate to the inner type.
                     // The IDL type string is identical to T's; the Optional
                     // wrapper is carried in WireKind, not in the type string.
+                    //
+                    // Nested Option<Option<T>> is rejected: the wire format
+                    // has no encoding for a doubly-optional field, and the
+                    // codegen has no Optional(Optional(...)) arm.
                     if let PathArguments::AngleBracketed(ref args) = last.arguments
                         && args.args.len() == 1
                         && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
                     {
+                        // Reject Option<Option<T>> before recursing.
+                        if let Type::Path(inner_path) = inner_ty {
+                            if inner_path.path.segments.last()
+                                .map(|s| s.ident == "Option")
+                                .unwrap_or(false)
+                            {
+                                return Err(syn::Error::new_spanned(
+                                    ty,
+                                    format!(
+                                        "nested `Option<Option<T>>` is not supported for field \
+                                         `{field_name}`; use `Option<T>` directly"
+                                    ),
+                                ));
+                            }
+                        }
                         return map_type(inner_ty, field_name);
                     }
                 }

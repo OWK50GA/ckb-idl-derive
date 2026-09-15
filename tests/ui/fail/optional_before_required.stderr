@@ -1,0 +1,5 @@
+error: required field `sig` appears after an optional field; all `Option<T>` fields must come last in the struct
+ --> tests/ui/fail/optional_before_required.rs:7:10
+  |
+7 |     sig: [u8; 65],
+  |          ^^^^^^^^
