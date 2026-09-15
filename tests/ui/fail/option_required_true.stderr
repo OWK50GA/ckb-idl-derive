@@ -1,0 +1,5 @@
+error: field `extra` is `Option<T>` but `required = true`; either add `#[witness(required = false)]` or use a non-optional type
+ --> tests/ui/fail/option_required_true.rs:6:12
+  |
+6 |     extra: Option<Vec<u8>>,
+  |            ^^^^^^^^^^^^^^^

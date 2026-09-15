@@ -35,6 +35,27 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
             let wire_kind = registry::map_wire_kind(&f.ty)
                 .expect("map_wire_kind must succeed for any type accepted by map_type");
 
+            // 2a. Consistency check: required ↔ Option<T>
+            let is_optional_type = matches!(wire_kind, registry::WireKind::Optional(_));
+            if is_optional_type && attrs.required {
+                return Err(syn::Error::new_spanned(
+                    &f.ty,
+                    format!(
+                        "field `{field_name}` is `Option<T>` but `required = true`; \
+                         either add `#[witness(required = false)]` or use a non-optional type"
+                    ),
+                ));
+            }
+            if !is_optional_type && !attrs.required {
+                return Err(syn::Error::new_spanned(
+                    &f.ty,
+                    format!(
+                        "field `{field_name}` is marked `required = false` but its type is not \
+                         `Option<T>`; wrap the type in `Option<...>` or remove `required = false`"
+                    ),
+                ));
+            }
+
             Ok(FieldMeta {
                 name: field_name,
                 idl_type,
@@ -45,6 +66,32 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
             })
         })
         .collect::<syn::Result<Vec<_>>>()?;
+
+    // 2b. Ordering check: Optional fields must come after all required fields.
+    // The buffer-exhaustion convention used to decode None only works when
+    // there are no required fields after the optional ones.
+    let mut seen_optional = false;
+    for meta in &metas {
+        let is_opt = matches!(meta.wire_kind, registry::WireKind::Optional(_));
+        if is_opt {
+            seen_optional = true;
+        } else if seen_optional {
+            // Find the field syn node to attach the span to.
+            let offending = fields_named
+                .named
+                .iter()
+                .find(|f| f.ident.as_ref().map(|i| i.to_string()).as_deref() == Some(&meta.name))
+                .expect("field must exist");
+            return Err(syn::Error::new_spanned(
+                &offending.ty,
+                format!(
+                    "required field `{}` appears after an optional field; \
+                     all `Option<T>` fields must come last in the struct",
+                    meta.name
+                ),
+            ));
+        }
+    }
 
     // 3. Build IDL JSON and serialise.
     let idl = codegen::build_idl(&metas);

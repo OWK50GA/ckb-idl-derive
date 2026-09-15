@@ -1,0 +1,5 @@
+error: field `sig` is marked `required = false` but its type is not `Option<T>`; wrap the type in `Option<...>` or remove `required = false`
+ --> tests/ui/fail/required_false_non_option.rs:6:10
+  |
+6 |     sig: [u8; 65],
+  |          ^^^^^^^^

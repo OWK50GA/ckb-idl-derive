@@ -32,7 +32,14 @@ pub struct FieldMeta {
 ///
 /// Produces:
 /// ```json
-/// { "witness": [ { "name": "...", "type": "...", "required": true/false }, ... ] }
+/// {
+///   "idl_version": "1",
+///   "encoding": {
+///     "variable_length_prefix": { "width": 4, "endian": "little" },
+///     "optional_fields": "trailing_exhaustion"
+///   },
+///   "witness": [ { "name": "...", "type": "...", "required": true/false }, ... ]
+/// }
 /// ```
 /// The `"description"` key is included only when `Some`.
 /// Field order matches the input slice order.
@@ -53,7 +60,14 @@ pub fn build_idl(fields: &[FieldMeta]) -> Value {
         })
         .collect();
 
-    json!({ "witness": array })
+    json!({
+        "idl_version": "1",
+        "encoding": {
+            "variable_length_prefix": { "width": 4, "endian": "little" },
+            "optional_fields": "trailing_exhaustion"
+        },
+        "witness": array
+    })
 }
 
 /// Emit a `pub const _CKB_WITNESS_IDL_PATH: &str = "<path>";` token stream.
@@ -82,7 +96,7 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
             let ident = format_ident!("{}", f.name);
             let name_str = &f.name;
 
-            match f.wire_kind {
+            match &f.wire_kind {
                 WireKind::FixedScalar { size: 1 } => quote! {
                     let #ident: u8 = {
                         if cursor + 1 > buf.len() {
@@ -159,7 +173,7 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                 },
 
                 WireKind::FixedScalar { size: _ } => {
-                    // map_wire_kind only emits size 1/4/8; anything else is a bug.
+                    // map_wire_kind only emits size 1/2/4/8/16; anything else is a bug.
                     quote! { compile_error!("unsupported scalar size in CkbWitness codegen"); }
                 }
 
@@ -203,6 +217,132 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                         cursor += len;
                         v
                     };
+                },
+
+                WireKind::Optional(inner) => match inner.as_ref() {
+                    WireKind::VarBytes => quote! {
+                        let #ident: ::core::option::Option<::alloc::vec::Vec<u8>> = {
+                            if cursor >= buf.len() {
+                                ::core::option::Option::None
+                            } else {
+                                if cursor + 4 > buf.len() {
+                                    return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                        field: #name_str,
+                                        expected: 4,
+                                        got: buf.len().saturating_sub(cursor),
+                                    });
+                                }
+                                let len = u32::from_le_bytes(
+                                    buf[cursor..cursor + 4].try_into().unwrap()
+                                ) as usize;
+                                cursor += 4;
+                                if cursor + len > buf.len() {
+                                    return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                        field: #name_str,
+                                        expected: len,
+                                        got: buf.len().saturating_sub(cursor),
+                                    });
+                                }
+                                let v = buf[cursor..cursor + len].to_vec();
+                                cursor += len;
+                                ::core::option::Option::Some(v)
+                            }
+                        };
+                    },
+                    WireKind::FixedArray { size } => quote! {
+                        let #ident: ::core::option::Option<[u8; #size]> = {
+                            if cursor >= buf.len() {
+                                ::core::option::Option::None
+                            } else {
+                                if cursor + #size > buf.len() {
+                                    return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                        field: #name_str,
+                                        expected: #size,
+                                        got: buf.len().saturating_sub(cursor),
+                                    });
+                                }
+                                let mut arr = [0u8; #size];
+                                arr.copy_from_slice(&buf[cursor..cursor + #size]);
+                                cursor += #size;
+                                ::core::option::Option::Some(arr)
+                            }
+                        };
+                    },
+                    WireKind::FixedScalar { size: 1 } => quote! {
+                        let #ident: ::core::option::Option<u8> = {
+                            if cursor >= buf.len() { ::core::option::Option::None }
+                            else { cursor += 1; ::core::option::Option::Some(buf[cursor - 1]) }
+                        };
+                    },
+                    WireKind::FixedScalar { size: 2 } => quote! {
+                        let #ident: ::core::option::Option<u16> = {
+                            if cursor >= buf.len() {
+                                ::core::option::Option::None
+                            } else if cursor + 2 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                    field: #name_str,
+                                    expected: 2,
+                                    got: buf.len().saturating_sub(cursor),
+                                });
+                            } else {
+                                let v = u16::from_le_bytes(buf[cursor..cursor+2].try_into().unwrap());
+                                cursor += 2;
+                                ::core::option::Option::Some(v)
+                            }
+                        };
+                    },
+                    WireKind::FixedScalar { size: 4 } => quote! {
+                        let #ident: ::core::option::Option<u32> = {
+                            if cursor >= buf.len() {
+                                ::core::option::Option::None
+                            } else if cursor + 4 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                    field: #name_str,
+                                    expected: 4,
+                                    got: buf.len().saturating_sub(cursor),
+                                });
+                            } else {
+                                let v = u32::from_le_bytes(buf[cursor..cursor+4].try_into().unwrap());
+                                cursor += 4;
+                                ::core::option::Option::Some(v)
+                            }
+                        };
+                    },
+                    WireKind::FixedScalar { size: 8 } => quote! {
+                        let #ident: ::core::option::Option<u64> = {
+                            if cursor >= buf.len() {
+                                ::core::option::Option::None
+                            } else if cursor + 8 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                    field: #name_str,
+                                    expected: 8,
+                                    got: buf.len().saturating_sub(cursor),
+                                });
+                            } else {
+                                let v = u64::from_le_bytes(buf[cursor..cursor+8].try_into().unwrap());
+                                cursor += 8;
+                                ::core::option::Option::Some(v)
+                            }
+                        };
+                    },
+                    WireKind::FixedScalar { size: 16 } => quote! {
+                        let #ident: ::core::option::Option<u128> = {
+                            if cursor >= buf.len() {
+                                ::core::option::Option::None
+                            } else if cursor + 16 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                    field: #name_str,
+                                    expected: 16,
+                                    got: buf.len().saturating_sub(cursor),
+                                });
+                            } else {
+                                let v = u128::from_le_bytes(buf[cursor..cursor+16].try_into().unwrap());
+                                cursor += 16;
+                                ::core::option::Option::Some(v)
+                            }
+                        };
+                    },
+                    _ => quote! { compile_error!("unsupported Optional inner kind in CkbWitness codegen"); },
                 },
             }
         })
@@ -304,6 +444,33 @@ mod tests {
             WireKind::FixedArray { size: 65 },
         )]);
         assert!(idl["witness"].is_array());
+    }
+
+    #[test]
+    fn top_level_idl_version_is_one() {
+        let idl = build_idl(&[]);
+        assert_eq!(idl["idl_version"].as_str().unwrap(), "1");
+    }
+
+    #[test]
+    fn top_level_encoding_block_is_present() {
+        let idl = build_idl(&[]);
+        assert_eq!(
+            idl["encoding"]["variable_length_prefix"]["width"]
+                .as_u64()
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            idl["encoding"]["variable_length_prefix"]["endian"]
+                .as_str()
+                .unwrap(),
+            "little"
+        );
+        assert_eq!(
+            idl["encoding"]["optional_fields"].as_str().unwrap(),
+            "trailing_exhaustion"
+        );
     }
 
     #[test]
@@ -490,6 +657,13 @@ mod tests {
         ) {
             let n = fields.len();
             let idl = build_idl(&fields);
+
+            // Top-level shape
+            prop_assert_eq!(idl["idl_version"].as_str().unwrap(), "1");
+            prop_assert_eq!(idl["encoding"]["variable_length_prefix"]["width"].as_u64().unwrap(), 4);
+            prop_assert_eq!(idl["encoding"]["variable_length_prefix"]["endian"].as_str().unwrap(), "little");
+            prop_assert_eq!(idl["encoding"]["optional_fields"].as_str().unwrap(), "trailing_exhaustion");
+
             let arr = idl["witness"].as_array()
                 .expect("\"witness\" must be a JSON array");
 
