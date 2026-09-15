@@ -82,7 +82,7 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
             let ident = format_ident!("{}", f.name);
             let name_str = &f.name;
 
-            match f.wire_kind {
+            match &f.wire_kind {
                 WireKind::FixedScalar { size: 1 } => quote! {
                     let #ident: u8 = {
                         if cursor + 1 > buf.len() {
@@ -159,7 +159,7 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                 },
 
                 WireKind::FixedScalar { size: _ } => {
-                    // map_wire_kind only emits size 1/4/8; anything else is a bug.
+                    // map_wire_kind only emits size 1/2/4/8/16; anything else is a bug.
                     quote! { compile_error!("unsupported scalar size in CkbWitness codegen"); }
                 }
 
@@ -203,6 +203,104 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                         cursor += len;
                         v
                     };
+                },
+
+                WireKind::Optional(inner) => match inner.as_ref() {
+                    WireKind::VarBytes => quote! {
+                        let #ident: ::core::option::Option<::alloc::vec::Vec<u8>> = {
+                            if cursor >= buf.len() {
+                                ::core::option::Option::None
+                            } else {
+                                if cursor + 4 > buf.len() {
+                                    return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                        field: #name_str,
+                                        expected: 4,
+                                        got: buf.len().saturating_sub(cursor),
+                                    });
+                                }
+                                let len = u32::from_le_bytes(
+                                    buf[cursor..cursor + 4].try_into().unwrap()
+                                ) as usize;
+                                cursor += 4;
+                                if cursor + len > buf.len() {
+                                    return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                        field: #name_str,
+                                        expected: len,
+                                        got: buf.len().saturating_sub(cursor),
+                                    });
+                                }
+                                let v = buf[cursor..cursor + len].to_vec();
+                                cursor += len;
+                                ::core::option::Option::Some(v)
+                            }
+                        };
+                    },
+                    WireKind::FixedArray { size } => quote! {
+                        let #ident: ::core::option::Option<[u8; #size]> = {
+                            if cursor >= buf.len() {
+                                ::core::option::Option::None
+                            } else {
+                                if cursor + #size > buf.len() {
+                                    return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                        field: #name_str,
+                                        expected: #size,
+                                        got: buf.len().saturating_sub(cursor),
+                                    });
+                                }
+                                let mut arr = [0u8; #size];
+                                arr.copy_from_slice(&buf[cursor..cursor + #size]);
+                                cursor += #size;
+                                ::core::option::Option::Some(arr)
+                            }
+                        };
+                    },
+                    WireKind::FixedScalar { size: 1 } => quote! {
+                        let #ident: ::core::option::Option<u8> = {
+                            if cursor >= buf.len() { ::core::option::Option::None }
+                            else { cursor += 1; ::core::option::Option::Some(buf[cursor - 1]) }
+                        };
+                    },
+                    WireKind::FixedScalar { size: 2 } => quote! {
+                        let #ident: ::core::option::Option<u16> = {
+                            if cursor + 2 > buf.len() { ::core::option::Option::None }
+                            else {
+                                let v = u16::from_le_bytes(buf[cursor..cursor+2].try_into().unwrap());
+                                cursor += 2;
+                                ::core::option::Option::Some(v)
+                            }
+                        };
+                    },
+                    WireKind::FixedScalar { size: 4 } => quote! {
+                        let #ident: ::core::option::Option<u32> = {
+                            if cursor + 4 > buf.len() { ::core::option::Option::None }
+                            else {
+                                let v = u32::from_le_bytes(buf[cursor..cursor+4].try_into().unwrap());
+                                cursor += 4;
+                                ::core::option::Option::Some(v)
+                            }
+                        };
+                    },
+                    WireKind::FixedScalar { size: 8 } => quote! {
+                        let #ident: ::core::option::Option<u64> = {
+                            if cursor + 8 > buf.len() { ::core::option::Option::None }
+                            else {
+                                let v = u64::from_le_bytes(buf[cursor..cursor+8].try_into().unwrap());
+                                cursor += 8;
+                                ::core::option::Option::Some(v)
+                            }
+                        };
+                    },
+                    WireKind::FixedScalar { size: 16 } => quote! {
+                        let #ident: ::core::option::Option<u128> = {
+                            if cursor + 16 > buf.len() { ::core::option::Option::None }
+                            else {
+                                let v = u128::from_le_bytes(buf[cursor..cursor+16].try_into().unwrap());
+                                cursor += 16;
+                                ::core::option::Option::Some(v)
+                            }
+                        };
+                    },
+                    _ => quote! { compile_error!("unsupported Optional inner kind in CkbWitness codegen"); },
                 },
             }
         })
