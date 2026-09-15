@@ -7,7 +7,7 @@ struct MyWitness {
     sig: [u8; 65],
     pubkey: [u8; 33],
     #[witness(required = false, description = "optional nonce")]
-    nonce: u64,
+    nonce: Option<u64>,
 }
 
 fn main() {}

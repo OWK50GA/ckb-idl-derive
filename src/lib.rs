@@ -35,6 +35,27 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
             let wire_kind = registry::map_wire_kind(&f.ty)
                 .expect("map_wire_kind must succeed for any type accepted by map_type");
 
+            // 2a. Consistency check: required ↔ Option<T>
+            let is_optional_type = matches!(wire_kind, registry::WireKind::Optional(_));
+            if is_optional_type && attrs.required {
+                return Err(syn::Error::new_spanned(
+                    &f.ty,
+                    format!(
+                        "field `{field_name}` is `Option<T>` but `required = true`; \
+                         either add `#[witness(required = false)]` or use a non-optional type"
+                    ),
+                ));
+            }
+            if !is_optional_type && !attrs.required {
+                return Err(syn::Error::new_spanned(
+                    &f.ty,
+                    format!(
+                        "field `{field_name}` is marked `required = false` but its type is not \
+                         `Option<T>`; wrap the type in `Option<...>` or remove `required = false`"
+                    ),
+                ));
+            }
+
             Ok(FieldMeta {
                 name: field_name,
                 idl_type,
