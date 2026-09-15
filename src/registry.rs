@@ -26,27 +26,21 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
             let segments = &type_path.path.segments;
 
             // Check for Vec<u8>
-            if let Some(last) = segments.last() {
-                if last.ident == "Vec" {
-                    if let PathArguments::AngleBracketed(ref args) = last.arguments {
-                        if args.args.len() == 1 {
-                            if let Some(GenericArgument::Type(Type::Path(inner))) =
-                                args.args.first()
-                            {
-                                if inner.path.is_ident("u8") {
-                                    return Ok("bytes".to_string());
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(last) = segments.last()
+                && last.ident == "Vec"
+                && let PathArguments::AngleBracketed(ref args) = last.arguments
+                && args.args.len() == 1
+                && let Some(GenericArgument::Type(Type::Path(inner))) = args.args.first()
+                && inner.path.is_ident("u8")
+            {
+                return Ok("bytes".to_string());
             }
 
             // Check for single-segment primitives
             if segments.len() == 1 {
                 let ident = &segments[0].ident;
                 match ident.to_string().as_str() {
-                    "u8"  => return Ok("uint8".to_string()),
+                    "u8" => return Ok("uint8".to_string()),
                     "u16" => return Ok("uint16".to_string()),
                     "u32" => return Ok("uint32".to_string()),
                     "u64" => return Ok("uint64".to_string()),
@@ -67,15 +61,13 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
                 _ => false,
             };
 
-            if elem_is_u8 {
-                if let Expr::Lit(ExprLit {
+            if elem_is_u8
+                && let Expr::Lit(ExprLit {
                     lit: Lit::Int(n), ..
                 }) = &type_array.len
-                {
-                    if let Ok(size) = n.base10_parse::<usize>() {
-                        return Ok(format!("bytes_fixed_{size}"));
-                    }
-                }
+                && let Ok(size) = n.base10_parse::<usize>()
+            {
+                return Ok(format!("bytes_fixed_{size}"));
             }
 
             Err(make_error(ty, field_name))
@@ -96,29 +88,23 @@ pub fn map_wire_kind(ty: &Type) -> Option<WireKind> {
             let segments = &type_path.path.segments;
 
             // Vec<u8> → VarBytes
-            if let Some(last) = segments.last() {
-                if last.ident == "Vec" {
-                    if let PathArguments::AngleBracketed(ref args) = last.arguments {
-                        if args.args.len() == 1 {
-                            if let Some(GenericArgument::Type(Type::Path(inner))) =
-                                args.args.first()
-                            {
-                                if inner.path.is_ident("u8") {
-                                    return Some(WireKind::VarBytes);
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(last) = segments.last()
+                && last.ident == "Vec"
+                && let PathArguments::AngleBracketed(ref args) = last.arguments
+                && args.args.len() == 1
+                && let Some(GenericArgument::Type(Type::Path(inner))) = args.args.first()
+                && inner.path.is_ident("u8")
+            {
+                return Some(WireKind::VarBytes);
             }
 
             // Scalar primitives
             if segments.len() == 1 {
                 match segments[0].ident.to_string().as_str() {
-                    "u8"   => return Some(WireKind::FixedScalar { size: 1 }),
-                    "u16"  => return Some(WireKind::FixedScalar { size: 2 }),
-                    "u32"  => return Some(WireKind::FixedScalar { size: 4 }),
-                    "u64"  => return Some(WireKind::FixedScalar { size: 8 }),
+                    "u8" => return Some(WireKind::FixedScalar { size: 1 }),
+                    "u16" => return Some(WireKind::FixedScalar { size: 2 }),
+                    "u32" => return Some(WireKind::FixedScalar { size: 4 }),
+                    "u64" => return Some(WireKind::FixedScalar { size: 8 }),
                     "u128" => return Some(WireKind::FixedScalar { size: 16 }),
                     _ => {}
                 }
@@ -134,12 +120,13 @@ pub fn map_wire_kind(ty: &Type) -> Option<WireKind> {
                 _ => false,
             };
 
-            if elem_is_u8 {
-                if let Expr::Lit(ExprLit { lit: Lit::Int(n), .. }) = &type_array.len {
-                    if let Ok(size) = n.base10_parse::<usize>() {
-                        return Some(WireKind::FixedArray { size });
-                    }
-                }
+            if elem_is_u8
+                && let Expr::Lit(ExprLit {
+                    lit: Lit::Int(n), ..
+                }) = &type_array.len
+                && let Ok(size) = n.base10_parse::<usize>()
+            {
+                return Some(WireKind::FixedArray { size });
             }
 
             None
@@ -239,7 +226,10 @@ mod tests {
     fn test_string_produces_error() {
         let err = map_type(&parse("String"), "my_field").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("unrecognised type"), "missing 'unrecognised type': {msg}");
+        assert!(
+            msg.contains("unrecognised type"),
+            "missing 'unrecognised type': {msg}"
+        );
         assert!(msg.contains("String"), "missing type name: {msg}");
         assert!(msg.contains("my_field"), "missing field name: {msg}");
     }
@@ -247,44 +237,81 @@ mod tests {
     #[test]
     fn test_error_message_mentions_array_syntax() {
         let err = map_type(&parse("String"), "f").unwrap_err();
-        assert!(err.to_string().contains("[u8; N]"), "should mention [u8; N]: {}", err);
+        assert!(
+            err.to_string().contains("[u8; N]"),
+            "should mention [u8; N]: {}",
+            err
+        );
     }
 
     // ── WireKind tests ────────────────────────────────────────────────────────
 
     #[test]
     fn wire_kind_u8() {
-        assert_eq!(map_wire_kind(&parse("u8")), Some(WireKind::FixedScalar { size: 1 }));
+        assert_eq!(
+            map_wire_kind(&parse("u8")),
+            Some(WireKind::FixedScalar { size: 1 })
+        );
     }
 
     #[test]
     fn wire_kind_u16() {
-        assert_eq!(map_wire_kind(&parse("u16")), Some(WireKind::FixedScalar { size: 2 }));
+        assert_eq!(
+            map_wire_kind(&parse("u16")),
+            Some(WireKind::FixedScalar { size: 2 })
+        );
     }
 
     #[test]
     fn wire_kind_u32() {
-        assert_eq!(map_wire_kind(&parse("u32")), Some(WireKind::FixedScalar { size: 4 }));
+        assert_eq!(
+            map_wire_kind(&parse("u32")),
+            Some(WireKind::FixedScalar { size: 4 })
+        );
     }
 
     #[test]
     fn wire_kind_u64() {
-        assert_eq!(map_wire_kind(&parse("u64")), Some(WireKind::FixedScalar { size: 8 }));
+        assert_eq!(
+            map_wire_kind(&parse("u64")),
+            Some(WireKind::FixedScalar { size: 8 })
+        );
     }
 
     #[test]
     fn wire_kind_u128() {
-        assert_eq!(map_wire_kind(&parse("u128")), Some(WireKind::FixedScalar { size: 16 }));
+        assert_eq!(
+            map_wire_kind(&parse("u128")),
+            Some(WireKind::FixedScalar { size: 16 })
+        );
     }
 
     #[test]
     fn wire_kind_array_any_n() {
-        assert_eq!(map_wire_kind(&parse("[u8; 32]")),  Some(WireKind::FixedArray { size: 32 }));
-        assert_eq!(map_wire_kind(&parse("[u8; 33]")),  Some(WireKind::FixedArray { size: 33 }));
-        assert_eq!(map_wire_kind(&parse("[u8; 64]")),  Some(WireKind::FixedArray { size: 64 }));
-        assert_eq!(map_wire_kind(&parse("[u8; 65]")),  Some(WireKind::FixedArray { size: 65 }));
-        assert_eq!(map_wire_kind(&parse("[u8; 96]")),  Some(WireKind::FixedArray { size: 96 }));
-        assert_eq!(map_wire_kind(&parse("[u8; 128]")), Some(WireKind::FixedArray { size: 128 }));
+        assert_eq!(
+            map_wire_kind(&parse("[u8; 32]")),
+            Some(WireKind::FixedArray { size: 32 })
+        );
+        assert_eq!(
+            map_wire_kind(&parse("[u8; 33]")),
+            Some(WireKind::FixedArray { size: 33 })
+        );
+        assert_eq!(
+            map_wire_kind(&parse("[u8; 64]")),
+            Some(WireKind::FixedArray { size: 64 })
+        );
+        assert_eq!(
+            map_wire_kind(&parse("[u8; 65]")),
+            Some(WireKind::FixedArray { size: 65 })
+        );
+        assert_eq!(
+            map_wire_kind(&parse("[u8; 96]")),
+            Some(WireKind::FixedArray { size: 96 })
+        );
+        assert_eq!(
+            map_wire_kind(&parse("[u8; 128]")),
+            Some(WireKind::FixedArray { size: 128 })
+        );
     }
 
     #[test]

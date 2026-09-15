@@ -1,8 +1,8 @@
 use syn::{
+    Ident, Lit, LitBool, LitStr, Token,
     ext::IdentExt,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    Ident, Lit, LitBool, LitStr, Token,
 };
 
 /// Parsed field-level `#[witness(...)]` attributes.
@@ -39,7 +39,11 @@ impl Parse for KeyValue {
         let key = key_ident.to_string();
         let _eq: Token![=] = input.parse()?;
         let value: Lit = input.parse()?;
-        Ok(KeyValue { key, key_span, value })
+        Ok(KeyValue {
+            key,
+            key_span,
+            value,
+        })
     }
 }
 
@@ -134,7 +138,7 @@ pub fn parse_field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use syn::{parse_quote, ItemStruct};
+    use syn::{ItemStruct, parse_quote};
 
     /// Extract the first field from a struct definition.
     fn first_field(s: ItemStruct) -> syn::Field {
@@ -211,7 +215,10 @@ mod tests {
         };
         let attrs = parse_field_attrs(&first_field(s)).unwrap();
         assert!(attrs.required);
-        assert_eq!(attrs.description.as_deref(), Some("64-byte Schnorr signature"));
+        assert_eq!(
+            attrs.description.as_deref(),
+            Some("64-byte Schnorr signature")
+        );
         assert_eq!(attrs.type_override.as_deref(), Some("schnorr_sig"));
     }
 
@@ -240,8 +247,7 @@ mod tests {
 
     #[test]
     fn type_override_empty_string_is_error() {
-        let s: ItemStruct =
-            parse_quote! { struct S { #[witness(type = "")] x: [u8; 32] } };
+        let s: ItemStruct = parse_quote! { struct S { #[witness(type = "")] x: [u8; 32] } };
         let err = parse_field_attrs(&first_field(s)).unwrap_err();
         assert!(
             err.to_string().contains("must not be an empty string"),
