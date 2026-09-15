@@ -10,7 +10,7 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
-syn = { version = "2", features = ["full", "derive"] }
+syn = { version = "3", features = ["full", "derive"] }
 quote = "1"
 proc-macro2 = "1"
 serde_json = "1"
