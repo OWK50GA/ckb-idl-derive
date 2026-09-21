@@ -2,7 +2,7 @@ use syn::{Expr, ExprLit, GenericArgument, Lit, PathArguments, Type};
 
 /// The wire kind of a field — used by codegen to emit the correct
 /// deserialization snippet for `from_witness_args`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum WireKind {
     /// Fixed-size copy type: u8, u16, u32, u64, u128. `size` is the byte width.
     FixedScalar { size: usize },
@@ -13,7 +13,38 @@ pub enum WireKind {
     /// Optional field: Option<T>. The inner WireKind describes T.
     /// Decodes as None when the remaining buffer is exhausted, Some(T) otherwise.
     Optional(Box<WireKind>),
+    /// A nested struct implementing `WitnessFields`.
+    /// Decoded by delegating to `<T as WitnessFields>::decode_fields`.
+    /// The type path is stored so codegen can emit the correct trait call.
+    Struct(syn::Path),
 }
+
+impl core::fmt::Debug for WireKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::FixedScalar { size } => write!(f, "FixedScalar {{ size: {size} }}"),
+            Self::FixedArray  { size } => write!(f, "FixedArray {{ size: {size} }}"),
+            Self::VarBytes             => write!(f, "VarBytes"),
+            Self::Optional(inner)      => write!(f, "Optional({inner:?})"),
+            Self::Struct(_)            => write!(f, "Struct(..)"),
+        }
+    }
+}
+
+impl PartialEq for WireKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::FixedScalar { size: a }, Self::FixedScalar { size: b }) => a == b,
+            (Self::FixedArray  { size: a }, Self::FixedArray  { size: b }) => a == b,
+            (Self::VarBytes,                Self::VarBytes)                 => true,
+            (Self::Optional(a),             Self::Optional(b))              => a == b,
+            // Struct variants carry a syn::Path which has no PartialEq — treat as unequal.
+            _ => false,
+        }
+    }
+}
+
+impl Eq for WireKind {}
 
 /// Maps a Rust `syn::Type` to a structural IDL type string.
 ///
@@ -77,7 +108,7 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
             if segments.len() == 1 {
                 let ident = &segments[0].ident;
                 match ident.to_string().as_str() {
-                    "u8" => return Ok("uint8".to_string()),
+                    "u8"  => return Ok("uint8".to_string()),
                     "u16" => return Ok("uint16".to_string()),
                     "u32" => return Ok("uint32".to_string()),
                     "u64" => return Ok("uint64".to_string()),
@@ -86,7 +117,10 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
                 }
             }
 
-            Err(make_error(ty, field_name))
+            // Any other Type::Path is treated as a nested struct that must
+            // implement WitnessFields. The compiler will enforce the trait
+            // bound when the generated decode call is compiled.
+            Ok("struct".to_string())
         }
 
         // Handle Type::Array: any [u8; N] → "bytes_fixed_N".
@@ -148,16 +182,17 @@ pub fn map_wire_kind(ty: &Type) -> Option<WireKind> {
             // Scalar primitives
             if segments.len() == 1 {
                 match segments[0].ident.to_string().as_str() {
-                    "u8" => return Some(WireKind::FixedScalar { size: 1 }),
-                    "u16" => return Some(WireKind::FixedScalar { size: 2 }),
-                    "u32" => return Some(WireKind::FixedScalar { size: 4 }),
-                    "u64" => return Some(WireKind::FixedScalar { size: 8 }),
+                    "u8"   => return Some(WireKind::FixedScalar { size: 1 }),
+                    "u16"  => return Some(WireKind::FixedScalar { size: 2 }),
+                    "u32"  => return Some(WireKind::FixedScalar { size: 4 }),
+                    "u64"  => return Some(WireKind::FixedScalar { size: 8 }),
                     "u128" => return Some(WireKind::FixedScalar { size: 16 }),
                     _ => {}
                 }
             }
 
-            None
+            // Any other path is a nested struct implementing WitnessFields.
+            Some(WireKind::Struct(type_path.path.clone()))
         }
 
         // [u8; N] → FixedArray { size: N }
@@ -187,7 +222,8 @@ fn make_error(ty: &Type, field_name: &str) -> syn::Error {
     let type_str = quote::quote!(#ty).to_string();
     let msg = format!(
         "unrecognised type `{type_str}` for field `{field_name}`; \
-         supported types are: u8, u16, u32, u64, u128, [u8; N] for any N, Vec<u8>, Option<T>"
+         supported types are: u8, u16, u32, u64, u128, [u8; N] for any N, Vec<u8>, Option<T>, \
+         or any named struct implementing WitnessFields"
     );
     syn::Error::new_spanned(ty, msg)
 }
@@ -268,27 +304,22 @@ mod tests {
     }
 
     // ── Error-path test ───────────────────────────────────────────────────────
+    // Note: Type::Path types that are not known primitives now map to "struct"
+    // rather than erroring. The only types that still error at map_type time are
+    // non-u8 arrays and other non-Path, non-Array types.
 
     #[test]
-    fn test_string_produces_error() {
-        let err = map_type(&parse("String"), "my_field").unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("unrecognised type"),
-            "missing 'unrecognised type': {msg}"
-        );
-        assert!(msg.contains("String"), "missing type name: {msg}");
-        assert!(msg.contains("my_field"), "missing field name: {msg}");
+    fn test_string_maps_to_struct() {
+        // String is a Type::Path — it now succeeds as a struct type.
+        // The compiler enforces WitnessFields at codegen time, not here.
+        assert_eq!(map_type(&parse("String"), "my_field").unwrap(), "struct");
     }
 
     #[test]
-    fn test_error_message_mentions_array_syntax() {
-        let err = map_type(&parse("String"), "f").unwrap_err();
-        assert!(
-            err.to_string().contains("[u8; N]"),
-            "should mention [u8; N]: {}",
-            err
-        );
+    fn test_error_message_on_non_u8_array() {
+        // [u32; 4] has a non-u8 element — this still errors at map_type time.
+        let err = map_type(&parse("[u32; 4]"), "f").unwrap_err();
+        assert!(err.to_string().contains("unrecognised type"), "{}", err);
     }
 
     // ── WireKind tests ────────────────────────────────────────────────────────

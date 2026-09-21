@@ -110,11 +110,102 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
     Ok(out)
 }
 
+fn impl_ckb_inner_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
+    let ast = syn::parse2::<DeriveInput>(input)?;
+
+    // Same validation as CkbWitness i.e. must be a named-field struct
+    let fields_named = validate::check_named_struct(&ast)?;
+
+    // Same field parsing pipeline as CkbWitness
+    let metas = fields_named
+        .named
+        .iter()
+        .map(|f| {
+            let field_name = f
+                .ident
+                .as_ref()
+                .expect("named field has no ident")
+                .to_string();
+
+            let attrs = attr::parse_field_attrs(f)?;
+            let idl_type = registry::map_type(&f.ty, &field_name)?;
+            let wire_kind = registry::map_wire_kind(&f.ty)
+                .expect("map_wire_kind must succeed for any type accepted by map_type");
+
+            let is_optional_type = matches!(wire_kind, registry::WireKind::Optional(_));
+            if is_optional_type && attrs.required {
+                return Err(syn::Error::new_spanned(
+                    &f.ty, 
+                    format!(
+                        "filed `${field_name}` is `Option<T>` but `required = true`; \
+                        either add `#[witness(required = false)]` or use a non-optional type"
+                    ),
+                ));
+            }
+            if !is_optional_type && !attrs.required {
+                return Err(syn::Error::new_spanned(
+                    &f.ty, 
+                    format!(
+                        "field `{field_name}` is marked `required = false` but its type is not\
+                        `Option<T>`; wrap the type in `Option<...>` or remove `required = false`"
+                    ),
+                ));
+            }
+
+            Ok(FieldMeta {
+                name: field_name,
+                idl_type,
+                required: attrs.required,
+                description: attrs.description,
+                type_override: attrs.type_override,
+                wire_kind
+            })
+        })
+        .collect::<syn::Result<Vec<_>>>()?;
+
+    // Same ordering check as CkbWitness
+    let mut seen_optional = false;
+    for meta in &metas {
+        let is_opt = matches!(meta.wire_kind, registry::WireKind::Optional(_));
+        if is_opt {
+            seen_optional = true;
+        } else if seen_optional {
+            let offending = fields_named
+                .named
+                .iter()
+                .find(|f| f.ident.as_ref().map(|i| i.to_string()).as_deref() == Some(&meta.name))
+                .expect("field must exist");
+            return Err(syn::Error::new_spanned(
+                &offending.ty, 
+                format!(
+                    "required field `{}` appears after an optional field;\
+                    all `Option<T>` fields must come last in the struct",
+                    meta.name
+                ),
+            ));
+        }
+    }
+
+    // No idl.json written, instead offloaded to CkbWitness
+    // Also no from_witness_args emitted, that is not our concern
+    // Emit only the WitnessFields trait impl.
+    Ok(codegen::emit_inner_impl(&ast.ident, &metas))
+}
+
 /// Public proc-macro entry point.
 #[proc_macro_derive(CkbWitness, attributes(witness))]
 pub fn ckb_witness(input: TokenStream) -> TokenStream {
     let input = TokenStream2::from(input);
     match impl_ckb_witness(input) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+#[proc_macro_derive(CkbInnerWitness, attributes(witness))]
+pub fn ckb_inner_witness(input: TokenStream) -> TokenStream {
+    let input = TokenStream2::from(input);
+    match impl_ckb_inner_witness(input) {
         Ok(ts) => ts.into(),
         Err(e) => e.to_compile_error().into(),
     }

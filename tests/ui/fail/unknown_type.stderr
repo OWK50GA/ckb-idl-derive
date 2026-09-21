@@ -1,5 +1,5 @@
-error: unrecognised type `String` for field `name`; supported types are: u8, u16, u32, u64, u128, [u8; N] for any N, Vec<u8>, Option<T>
+error[E0277]: the trait bound `String: WitnessFields` is not satisfied
  --> tests/ui/fail/unknown_type.rs:5:11
   |
 5 |     name: String,
-  |           ^^^^^^
+  |           ^^^^^^ the trait `WitnessFields` is not implemented for `String`
