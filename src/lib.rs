@@ -55,6 +55,19 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
                     ),
                 ));
             }
+            // Option<NamedStruct> is not supported: the Optional decoder has
+            // no WireKind::Struct arm and there is no safe framing convention
+            // for an optional nested struct under the trailing-exhaustion model.
+            if matches!(&wire_kind, registry::WireKind::Optional(inner) if matches!(inner.as_ref(), registry::WireKind::Struct(_))) {
+                return Err(syn::Error::new_spanned(
+                    &f.ty,
+                    format!(
+                        "field `{field_name}` is `Option<NamedStruct>` which is not supported; \
+                         optional nested structs have no safe wire boundary under the \
+                         trailing-exhaustion encoding — use `Option<Vec<u8>>` and decode manually"
+                    ),
+                ));
+            }
 
             Ok(FieldMeta {
                 name: field_name,
@@ -70,13 +83,18 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
     // 2b. Ordering check: Optional fields must come after all required fields.
     // The buffer-exhaustion convention used to decode None only works when
     // there are no required fields after the optional ones.
+    // Additionally, a Struct field (CkbInnerWitness) that contains optional
+    // trailing fields must itself be the last non-optional field in the parent,
+    // for the same reason — we cannot distinguish its trailing exhaustion from
+    // the start of the next parent field. For simplicity we reject Struct fields
+    // that appear before any optional field in the parent.
     let mut seen_optional = false;
     for meta in &metas {
         let is_opt = matches!(meta.wire_kind, registry::WireKind::Optional(_));
+        let is_struct = matches!(meta.wire_kind, registry::WireKind::Struct(_));
         if is_opt {
             seen_optional = true;
         } else if seen_optional {
-            // Find the field syn node to attach the span to.
             let offending = fields_named
                 .named
                 .iter()
@@ -87,6 +105,26 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
                 format!(
                     "required field `{}` appears after an optional field; \
                      all `Option<T>` fields must come last in the struct",
+                    meta.name
+                ),
+            ));
+        }
+        // A nested struct field must come before any optional field in the
+        // parent. If it appears after an optional field the boundary is
+        // ambiguous; if it appears before one the inner struct's own optional
+        // trailing fields would consume parent bytes. Struct fields must come
+        // before all optional fields in the parent layout.
+        if is_struct && seen_optional {
+            let offending = fields_named
+                .named
+                .iter()
+                .find(|f| f.ident.as_ref().map(|i| i.to_string()).as_deref() == Some(&meta.name))
+                .expect("field must exist");
+            return Err(syn::Error::new_spanned(
+                &offending.ty,
+                format!(
+                    "nested struct field `{}` appears after an optional field; \
+                     nested struct fields must come before all `Option<T>` fields",
                     meta.name
                 ),
             ));
@@ -135,19 +173,32 @@ fn impl_ckb_inner_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
             let is_optional_type = matches!(wire_kind, registry::WireKind::Optional(_));
             if is_optional_type && attrs.required {
                 return Err(syn::Error::new_spanned(
-                    &f.ty, 
+                    &f.ty,
                     format!(
-                        "filed `${field_name}` is `Option<T>` but `required = true`; \
-                        either add `#[witness(required = false)]` or use a non-optional type"
+                        "field `{field_name}` is `Option<T>` but `required = true`; \
+                         either add `#[witness(required = false)]` or use a non-optional type"
                     ),
                 ));
             }
             if !is_optional_type && !attrs.required {
                 return Err(syn::Error::new_spanned(
-                    &f.ty, 
+                    &f.ty,
                     format!(
-                        "field `{field_name}` is marked `required = false` but its type is not\
-                        `Option<T>`; wrap the type in `Option<...>` or remove `required = false`"
+                        "field `{field_name}` is marked `required = false` but its type is not \
+                         `Option<T>`; wrap the type in `Option<...>` or remove `required = false`"
+                    ),
+                ));
+            }
+            // Option<NamedStruct> is not supported: the Optional decoder has
+            // no WireKind::Struct arm and there is no safe framing convention
+            // for an optional nested struct under the trailing-exhaustion model.
+            if matches!(&wire_kind, registry::WireKind::Optional(inner) if matches!(inner.as_ref(), registry::WireKind::Struct(_))) {
+                return Err(syn::Error::new_spanned(
+                    &f.ty,
+                    format!(
+                        "field `{field_name}` is `Option<NamedStruct>` which is not supported; \
+                         optional nested structs have no safe wire boundary under the \
+                         trailing-exhaustion encoding — use `Option<Vec<u8>>` and decode manually"
                     ),
                 ));
             }
@@ -176,10 +227,10 @@ fn impl_ckb_inner_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
                 .find(|f| f.ident.as_ref().map(|i| i.to_string()).as_deref() == Some(&meta.name))
                 .expect("field must exist");
             return Err(syn::Error::new_spanned(
-                &offending.ty, 
+                &offending.ty,
                 format!(
-                    "required field `{}` appears after an optional field;\
-                    all `Option<T>` fields must come last in the struct",
+                    "required field `{}` appears after an optional field; \
+                     all `Option<T>` fields must come last in the struct",
                     meta.name
                 ),
             ));
