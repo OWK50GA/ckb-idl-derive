@@ -176,7 +176,7 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                         let v = u16::from_le_bytes(buf[cursor..cursor + 2].try_into().unwrap());
                         cursor += 2;
                         v
-                    }
+                    };
                 },
 
                 WireKind::FixedScalar { size: 4 } => quote! {
@@ -221,7 +221,7 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                         let v = u128::from_le_bytes(buf[cursor..cursor + 16].try_into().unwrap());
                         cursor += 16;
                         v
-                    }
+                    };
                 },
 
                 WireKind::FixedScalar { size: _ } => {
