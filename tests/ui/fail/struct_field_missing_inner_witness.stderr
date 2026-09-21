@@ -1,0 +1,11 @@
+error[E0277]: the trait bound `NotAnnotated: WitnessFields` is not satisfied
+  --> tests/ui/fail/struct_field_missing_inner_witness.rs:14:12
+   |
+14 |     inner: NotAnnotated,
+   |            ^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `WitnessFields` is not implemented for `NotAnnotated`
+  --> tests/ui/fail/struct_field_missing_inner_witness.rs:7:1
+   |
+ 7 | pub struct NotAnnotated {
+   | ^^^^^^^^^^^^^^^^^^^^^^^

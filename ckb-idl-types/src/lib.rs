@@ -29,3 +29,17 @@ pub enum WitnessError {
         total: usize,
     },
 }
+
+#[derive(Debug)]
+pub struct FieldSpec {
+    pub name: &'static str,
+    pub idl_type: &'static str,
+    pub required: bool,
+    pub description: Option<&'static str>,
+}
+pub trait WitnessFields {
+    fn idl_fields() -> &'static [FieldSpec];
+    fn decode_fields(buf: &[u8], cursor: &mut usize) -> Result<Self, WitnessError>
+    where
+        Self: Sized;
+}

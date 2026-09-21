@@ -78,19 +78,71 @@ pub fn emit_const(idl_path: &Path) -> TokenStream {
     }
 }
 
-/// Emit the `from_witness_args` impl for the annotated struct.
+/// Emit the `WitnessFields` trait impl for a `#[derive(CkbInnerWitness)]` struct.
 ///
-/// Wire format (length-prefixed):
-/// - Fixed scalars  (u8/u32/u64)  : read N bytes, decode as little-endian.
-/// - Fixed arrays   ([u8; N])      : read exactly N bytes, copy into array.
-/// - Variable bytes (Vec<u8>)      : read 4-byte LE length prefix, then that many bytes.
+/// This generates:
+/// - `idl_fields()` returning a static slice of `FieldSpec` built from the field metadata.
+/// - `decode_fields(buf, cursor)` using the same decode stmts as `emit_impl`, but
+///   operating on a caller-supplied buffer slice rather than loading from the CKB VM.
 ///
-/// All reads consume bytes sequentially from the raw `lock` field of
-/// `WitnessArgs`. Any leftover bytes after all fields are decoded produce
-/// `WitnessError::TrailingBytes`.
-pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream {
-    // Build one decode snippet per field.
-    let decode_stmts: Vec<TokenStream> = fields
+/// Unlike `emit_impl`, this function does NOT emit `from_witness_args` (no VM syscall)
+/// and does NOT check for trailing bytes — the caller controls the cursor and is
+/// responsible for consuming exactly the right number of bytes.
+pub fn emit_inner_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream {
+    let decode_stmts = emit_decode_stmts(fields);
+
+    let field_idents: Vec<_> = fields.iter().map(|f| format_ident!("{}", f.name)).collect();
+
+    // Build the static FieldSpec slice entries.
+    let field_specs: Vec<TokenStream> = fields
+        .iter()
+        .map(|f| {
+            let name_str = &f.name;
+            let type_str = f.type_override.as_deref().unwrap_or(f.idl_type.as_str());
+            let required = f.required;
+            let desc = match &f.description {
+                Some(d) => quote! { ::core::option::Option::Some(#d) },
+                None => quote! { ::core::option::Option::None },
+            };
+            quote! {
+                ::ckb_idl_types::FieldSpec {
+                    name:        #name_str,
+                    idl_type:    #type_str,
+                    required:    #required,
+                    description: #desc,
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        impl ::ckb_idl_types::WitnessFields for #struct_name {
+            fn idl_fields() -> &'static [::ckb_idl_types::FieldSpec] {
+                &[ #(#field_specs),* ]
+            }
+
+            fn decode_fields(
+                buf: &[u8],
+                __cursor_ref: &mut usize,
+            ) -> ::core::result::Result<Self, ::ckb_idl_types::WitnessError> {
+                // Decode stmts use `cursor` as a plain `usize` via `&mut cursor`.
+                // We read from __cursor_ref, run the stmts, then write back.
+                let mut cursor: usize = *__cursor_ref;
+                #(#decode_stmts)*
+                *__cursor_ref = cursor;
+                ::core::result::Result::Ok(Self {
+                    #(#field_idents),*
+                })
+            }
+        }
+    }
+}
+
+/// Extract the per-field decode statements shared by both `emit_impl` and
+/// `emit_inner_impl`. Both functions need identical decode logic — keeping it
+/// here ensures any fix is applied in one place.
+fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
+    fields
         .iter()
         .map(|f| {
             let ident = format_ident!("{}", f.name);
@@ -124,7 +176,7 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                         let v = u16::from_le_bytes(buf[cursor..cursor + 2].try_into().unwrap());
                         cursor += 2;
                         v
-                    }
+                    };
                 },
 
                 WireKind::FixedScalar { size: 4 } => quote! {
@@ -169,7 +221,7 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                         let v = u128::from_le_bytes(buf[cursor..cursor + 16].try_into().unwrap());
                         cursor += 16;
                         v
-                    }
+                    };
                 },
 
                 WireKind::FixedScalar { size: _ } => {
@@ -344,9 +396,24 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
                     },
                     _ => quote! { compile_error!("unsupported Optional inner kind in CkbWitness codegen"); },
                 },
+
+                WireKind::Struct(type_path) => quote! {
+                    let #ident = <#type_path as ::ckb_idl_types::WitnessFields>::decode_fields(
+                        buf, &mut cursor
+                    )?;
+                },
             }
         })
-        .collect();
+        .collect()
+}
+
+/// Emit the `from_witness_args` impl for a `#[derive(CkbWitness)]` struct.
+///
+/// Loads the witness from the CKB VM, deserialises each field in declaration
+/// order, and returns a fully populated struct instance. Trailing bytes after
+/// all fields are consumed produce `WitnessError::TrailingBytes`.
+pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream {
+    let decode_stmts = emit_decode_stmts(fields);
 
     // Identifiers for the struct construction expression.
     let field_idents: Vec<_> = fields.iter().map(|f| format_ident!("{}", f.name)).collect();
