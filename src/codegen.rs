@@ -102,7 +102,7 @@ pub fn emit_inner_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenS
             let required = f.required;
             let desc = match &f.description {
                 Some(d) => quote! { ::core::option::Option::Some(#d) },
-                None    => quote! { ::core::option::Option::None },
+                None => quote! { ::core::option::Option::None },
             };
             quote! {
                 ::ckb_idl_types::FieldSpec {

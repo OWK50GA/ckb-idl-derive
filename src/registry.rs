@@ -23,10 +23,10 @@ impl core::fmt::Debug for WireKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::FixedScalar { size } => write!(f, "FixedScalar {{ size: {size} }}"),
-            Self::FixedArray  { size } => write!(f, "FixedArray {{ size: {size} }}"),
-            Self::VarBytes             => write!(f, "VarBytes"),
-            Self::Optional(inner)      => write!(f, "Optional({inner:?})"),
-            Self::Struct(_)            => write!(f, "Struct(..)"),
+            Self::FixedArray { size } => write!(f, "FixedArray {{ size: {size} }}"),
+            Self::VarBytes => write!(f, "VarBytes"),
+            Self::Optional(inner) => write!(f, "Optional({inner:?})"),
+            Self::Struct(_) => write!(f, "Struct(..)"),
         }
     }
 }
@@ -35,9 +35,9 @@ impl PartialEq for WireKind {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::FixedScalar { size: a }, Self::FixedScalar { size: b }) => a == b,
-            (Self::FixedArray  { size: a }, Self::FixedArray  { size: b }) => a == b,
-            (Self::VarBytes,                Self::VarBytes)                 => true,
-            (Self::Optional(a),             Self::Optional(b))              => a == b,
+            (Self::FixedArray { size: a }, Self::FixedArray { size: b }) => a == b,
+            (Self::VarBytes, Self::VarBytes) => true,
+            (Self::Optional(a), Self::Optional(b)) => a == b,
             // Struct variants carry a syn::Path which has no PartialEq — treat as unequal.
             _ => false,
         }
@@ -108,7 +108,7 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
             if segments.len() == 1 {
                 let ident = &segments[0].ident;
                 match ident.to_string().as_str() {
-                    "u8"  => return Ok("uint8".to_string()),
+                    "u8" => return Ok("uint8".to_string()),
                     "u16" => return Ok("uint16".to_string()),
                     "u32" => return Ok("uint32".to_string()),
                     "u64" => return Ok("uint64".to_string()),
@@ -182,10 +182,10 @@ pub fn map_wire_kind(ty: &Type) -> Option<WireKind> {
             // Scalar primitives
             if segments.len() == 1 {
                 match segments[0].ident.to_string().as_str() {
-                    "u8"   => return Some(WireKind::FixedScalar { size: 1 }),
-                    "u16"  => return Some(WireKind::FixedScalar { size: 2 }),
-                    "u32"  => return Some(WireKind::FixedScalar { size: 4 }),
-                    "u64"  => return Some(WireKind::FixedScalar { size: 8 }),
+                    "u8" => return Some(WireKind::FixedScalar { size: 1 }),
+                    "u16" => return Some(WireKind::FixedScalar { size: 2 }),
+                    "u32" => return Some(WireKind::FixedScalar { size: 4 }),
+                    "u64" => return Some(WireKind::FixedScalar { size: 8 }),
                     "u128" => return Some(WireKind::FixedScalar { size: 16 }),
                     _ => {}
                 }

@@ -39,5 +39,7 @@ pub struct FieldSpec {
 }
 pub trait WitnessFields {
     fn idl_fields() -> &'static [FieldSpec];
-    fn decode_fields(buf: &[u8], cursor: &mut usize) -> Result<Self, WitnessError> where  Self:Sized;
+    fn decode_fields(buf: &[u8], cursor: &mut usize) -> Result<Self, WitnessError>
+    where
+        Self: Sized;
 }
