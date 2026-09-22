@@ -37,10 +37,7 @@ pub enum WitnessError {
     },
 
     /// The type ID read from the buffer does not match any known union variant
-    UnknownUnionTypeId {
-        field: &'static str,
-        type_id: u32,
-    },
+    UnknownUnionTypeId { field: &'static str, type_id: u32 },
 }
 
 #[derive(Debug)]
@@ -67,16 +64,26 @@ pub struct StructSchema {
 }
 
 pub enum TypeSchema {
-    Uint { bits: u16 },
-    FixedBytes { length: usize },
+    Uint {
+        bits: u16,
+    },
+    FixedBytes {
+        length: usize,
+    },
     Bytes,
-    Optional { inner: fn() -> &'static TypeSchema },
+    Optional {
+        inner: fn() -> &'static TypeSchema,
+    },
     Vector {
         element: fn() -> &'static TypeSchema,
         count_prefix_bits: u8,
     },
-    Struct { schema: fn() -> &'static StructSchema },
-    Union { schema: fn() -> &'static UnionSchema },
+    Struct {
+        schema: fn() -> &'static StructSchema,
+    },
+    Union {
+        schema: fn() -> &'static UnionSchema,
+    },
 }
 
 pub struct UnionVariantSchema {

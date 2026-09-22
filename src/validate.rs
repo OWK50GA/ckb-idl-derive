@@ -1,4 +1,4 @@
-use syn::{Data, DeriveInput, DataEnum, Fields, FieldsNamed};
+use syn::{Data, DataEnum, DeriveInput, Fields, FieldsNamed};
 
 pub fn check_named_struct(input: &DeriveInput) -> syn::Result<&FieldsNamed> {
     match &input.data {
@@ -16,9 +16,7 @@ pub fn check_named_struct(input: &DeriveInput) -> syn::Result<&FieldsNamed> {
     }
 }
 
-pub fn check_enum_single_field_variants(
-    input: &DeriveInput
-) -> syn::Result<&DataEnum> {
+pub fn check_enum_single_field_variants(input: &DeriveInput) -> syn::Result<&DataEnum> {
     let data_enum = match &input.data {
         Data::Enum(e) => e,
         _ => {
@@ -38,7 +36,7 @@ pub fn check_enum_single_field_variants(
 
     for variant in &data_enum.variants {
         match &variant.fields {
-            Fields::Unnamed(f) if f.unnamed.len() == 1 => {},
+            Fields::Unnamed(f) if f.unnamed.len() == 1 => {}
             Fields::Unnamed(_) => {
                 return Err(syn::Error::new_spanned(
                     variant,
