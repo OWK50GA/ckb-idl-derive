@@ -1,0 +1,13 @@
+[package]
+name = "ckb-idl-export"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ckb-idl-types = { path = "../ckb-idl-types" }
+serde_json = "1"
+
+[dev-dependencies]
+ckb-idl-derive = { path = ".." }
+ckb-idl-types = { path = "../ckb-idl-types", features = ["ckb-contract"] }
+ckb-std = "1.1"

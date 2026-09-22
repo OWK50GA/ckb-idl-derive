@@ -33,7 +33,7 @@ pub struct FieldMeta {
 /// Produces:
 /// ```json
 /// {
-///   "idl_version": "1",
+///   "idl_version": "0.1",
 ///   "encoding": {
 ///     "variable_length_prefix": { "width": 4, "endian": "little" },
 ///     "optional_fields": "trailing_exhaustion"
@@ -67,7 +67,7 @@ pub fn build_idl(fields: &[FieldMeta]) -> Value {
         .collect();
 
     json!({
-        "idl_version": "1",
+        "idl_version": "0.1",
         "encoding": {
             "variable_length_prefix": { "width": 4, "endian": "little" },
             "optional_fields": "trailing_exhaustion"
@@ -81,6 +81,148 @@ pub fn emit_const(idl_path: &Path) -> TokenStream {
     let path_str = idl_path.to_string_lossy();
     quote! {
         pub const _CKB_WITNESS_IDL_PATH: &str = #path_str;
+    }
+}
+
+/// Emit static schema providers shared by the contract decoder and the host
+/// exporter. Providers, rather than allocated recursive values, keep this
+/// representation usable in `no_std` CKB contracts.
+fn emit_schema_support(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream {
+    let provider_defs: Vec<TokenStream> = fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let provider = format_ident!(
+                "__ckb_idl_schema_{}_{}",
+                struct_name,
+                index
+            );
+            emit_type_provider(&provider, &field.wire_kind)
+        })
+        .collect();
+
+    let schema_fields: Vec<TokenStream> = fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let provider = format_ident!(
+                "__ckb_idl_schema_{}_{}",
+                struct_name,
+                index
+            );
+            let name = &field.name;
+            let required = field.required;
+            let description = match &field.description {
+                Some(value) => quote! { ::core::option::Option::Some(#value) },
+                None => quote! { ::core::option::Option::None },
+            };
+            let semantic_type = match &field.type_override {
+                Some(value) => quote! { ::core::option::Option::Some(#value) },
+                None => quote! { ::core::option::Option::None },
+            };
+            quote! {
+                ::ckb_idl_types::FieldSchema {
+                    name: #name,
+                    required: #required,
+                    description: #description,
+                    semantic_type: #semantic_type,
+                    wire_type: #provider,
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        #(#provider_defs)*
+
+        impl ::ckb_idl_types::WitnessSchema for #struct_name {
+            fn schema() -> &'static ::ckb_idl_types::StructSchema {
+                static FIELDS: &[::ckb_idl_types::FieldSchema] = &[
+                    #(#schema_fields),*
+                ];
+                static SCHEMA: ::ckb_idl_types::StructSchema =
+                    ::ckb_idl_types::StructSchema { fields: FIELDS };
+                &SCHEMA
+            }
+        }
+    }
+}
+
+fn emit_type_provider(name: &syn::Ident, wire_kind: &WireKind) -> TokenStream {
+    match wire_kind {
+        WireKind::FixedScalar { size } => {
+            let bits = (*size as u16) * 8;
+            quote! {
+                #[allow(non_snake_case)]
+                fn #name() -> &'static ::ckb_idl_types::TypeSchema {
+                    static TYPE: ::ckb_idl_types::TypeSchema =
+                        ::ckb_idl_types::TypeSchema::Uint { bits: #bits };
+                    &TYPE
+                }
+            }
+        }
+        WireKind::FixedArray { size } => quote! {
+            #[allow(non_snake_case)]
+            fn #name() -> &'static ::ckb_idl_types::TypeSchema {
+                static TYPE: ::ckb_idl_types::TypeSchema =
+                    ::ckb_idl_types::TypeSchema::FixedBytes { length: #size };
+                &TYPE
+            }
+        },
+        WireKind::VarBytes => quote! {
+            #[allow(non_snake_case)]
+            fn #name() -> &'static ::ckb_idl_types::TypeSchema {
+                static TYPE: ::ckb_idl_types::TypeSchema = ::ckb_idl_types::TypeSchema::Bytes;
+                &TYPE
+            }
+        },
+        WireKind::Optional(inner) => {
+            let inner_name = format_ident!("{}_inner", name);
+            let inner_provider = emit_type_provider(&inner_name, inner);
+            quote! {
+                #inner_provider
+                #[allow(non_snake_case)]
+                fn #name() -> &'static ::ckb_idl_types::TypeSchema {
+                    static TYPE: ::ckb_idl_types::TypeSchema =
+                        ::ckb_idl_types::TypeSchema::Optional { inner: #inner_name };
+                    &TYPE
+                }
+            }
+        }
+        WireKind::VecOf(inner) => {
+            let inner_name = format_ident!("{}_element", name);
+            let inner_provider = emit_type_provider(&inner_name, inner);
+            quote! {
+                #inner_provider
+                #[allow(non_snake_case)]
+                fn #name() -> &'static ::ckb_idl_types::TypeSchema {
+                    static TYPE: ::ckb_idl_types::TypeSchema =
+                        ::ckb_idl_types::TypeSchema::Vector {
+                            element: #inner_name,
+                            count_prefix_bits: 32,
+                        };
+                    &TYPE
+                }
+            }
+        }
+        WireKind::Struct(path) => quote! {
+            #[allow(non_snake_case)]
+            fn #name() -> &'static ::ckb_idl_types::TypeSchema {
+                static TYPE: ::ckb_idl_types::TypeSchema = ::ckb_idl_types::TypeSchema::Struct {
+                    schema: <#path as ::ckb_idl_types::WitnessFields>::field_schema,
+                };
+                &TYPE
+            }
+        },
+        WireKind::Union(path) => quote! {
+            #[allow(non_snake_case)]
+            fn #name() -> &'static ::ckb_idl_types::TypeSchema {
+                static TYPE: ::ckb_idl_types::TypeSchema = ::ckb_idl_types::TypeSchema::Union {
+                    schema: <#path as ::ckb_idl_types::WitnessUnion>::schema,
+                };
+                &TYPE
+            }
+        },
     }
 }
 
@@ -121,7 +263,11 @@ pub fn emit_inner_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenS
         })
         .collect();
 
+    let schema_support = emit_schema_support(struct_name, fields);
+
     quote! {
+        #schema_support
+
         impl ::ckb_idl_types::WitnessFields for #struct_name {
             fn idl_fields() -> &'static [::ckb_idl_types::FieldSpec] {
                 &[ #(#field_specs),* ]
@@ -191,8 +337,36 @@ pub fn emit_union_impl(
 
     let enum_name_str = enum_name.to_string();
 
+    let schema_variants: Vec<TokenStream> = variants
+        .iter()
+        .zip(tags.iter())
+        .map(|(v, tag)| {
+            let name = v.ident.to_string();
+            let inner_ty = match &v.fields {
+                syn::Fields::Unnamed(f) => &f.unnamed[0].ty,
+                _ => unreachable!(),
+            };
+            quote! {
+                ::ckb_idl_types::UnionVariantSchema {
+                    tag: #tag,
+                    name: #name,
+                    schema: <#inner_ty as ::ckb_idl_types::WitnessFields>::field_schema,
+                }
+            }
+        })
+        .collect();
+
     quote! {
         impl ::ckb_idl_types::WitnessUnion for #enum_name {
+            fn schema() -> &'static ::ckb_idl_types::UnionSchema {
+                static VARIANTS: &[::ckb_idl_types::UnionVariantSchema] = &[
+                    #(#schema_variants),*
+                ];
+                static SCHEMA: ::ckb_idl_types::UnionSchema =
+                    ::ckb_idl_types::UnionSchema { variants: VARIANTS };
+                &SCHEMA
+            }
+
             fn idl_variants() -> &'static [::ckb_idl_types::UnionVariantSpec] {
                 &[ #(#variant_specs),* ]
             }
@@ -596,11 +770,14 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
 /// all fields are consumed produce `WitnessError::TrailingBytes`.
 pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream {
     let decode_stmts = emit_decode_stmts(fields);
+    let schema_support = emit_schema_support(struct_name, fields);
 
     // Identifiers for the struct construction expression.
     let field_idents: Vec<_> = fields.iter().map(|f| format_ident!("{}", f.name)).collect();
 
     quote! {
+        #schema_support
+
         impl #struct_name {
             /// Deserialise this witness struct from the `lock` field of
             /// `WitnessArgs` at `(index, source)`.
@@ -696,9 +873,9 @@ mod tests {
     }
 
     #[test]
-    fn top_level_idl_version_is_one() {
+    fn top_level_idl_version_is_point_one() {
         let idl = build_idl(&[]);
-        assert_eq!(idl["idl_version"].as_str().unwrap(), "1");
+        assert_eq!(idl["idl_version"].as_str().unwrap(), "0.1");
     }
 
     #[test]
@@ -908,7 +1085,7 @@ mod tests {
             let idl = build_idl(&fields);
 
             // Top-level shape
-            prop_assert_eq!(idl["idl_version"].as_str().unwrap(), "1");
+            prop_assert_eq!(idl["idl_version"].as_str().unwrap(), "0.1");
             prop_assert_eq!(idl["encoding"]["variable_length_prefix"]["width"].as_u64().unwrap(), 4);
             prop_assert_eq!(idl["encoding"]["variable_length_prefix"]["endian"].as_str().unwrap(), "little");
             prop_assert_eq!(idl["encoding"]["optional_fields"].as_str().unwrap(), "trailing_exhaustion");

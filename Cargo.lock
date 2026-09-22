@@ -107,6 +107,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ckb-idl-export"
+version = "0.1.0"
+dependencies = [
+ "ckb-idl-derive",
+ "ckb-idl-types",
+ "ckb-std",
+ "serde_json",
+]
+
+[[package]]
 name = "ckb-idl-types"
 version = "0.1.0"
 dependencies = [
