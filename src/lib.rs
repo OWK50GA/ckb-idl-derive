@@ -85,7 +85,7 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
             // unreliable when followed by other fields.
             if matches!(&wire_kind, registry::WireKind::Optional(inner) if matches!(inner.as_ref(), registry::WireKind::VecOf(_))) {
                 return Err(syn::Error::new_spanned(
-                    &f.ty, 
+                    &f.ty,
                     format!(
                         "field `{field_name}` is `Option<Vec<T>>` where T is not a u8, which is not\
                         supported; use a required Vec<T> or `Option<Vec<u8>>` instead"

@@ -119,20 +119,30 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
                     // Unsupported: Vec<Vec<T>>, Vec<Option<T>>, Vec<[non-u8; N]>.
                     let reject = match inner_ty {
                         // Vec<Vec<T>> — nested vectors are not supported.
-                        Type::Path(p) if p.path.segments.last()
-                            .map(|s| s.ident == "Vec")
-                            .unwrap_or(false) =>
+                        Type::Path(p)
+                            if p.path
+                                .segments
+                                .last()
+                                .map(|s| s.ident == "Vec")
+                                .unwrap_or(false) =>
                         {
-                            Some("Vec<Vec<T>> is not supported as a field type; \
-                                  use a named struct with a Vec<u8> field instead")
+                            Some(
+                                "Vec<Vec<T>> is not supported as a field type; \
+                                  use a named struct with a Vec<u8> field instead",
+                            )
                         }
                         // Vec<Option<T>> — optional elements are not supported.
-                        Type::Path(p) if p.path.segments.last()
-                            .map(|s| s.ident == "Option")
-                            .unwrap_or(false) =>
+                        Type::Path(p)
+                            if p.path
+                                .segments
+                                .last()
+                                .map(|s| s.ident == "Option")
+                                .unwrap_or(false) =>
                         {
-                            Some("Vec<Option<T>> is not supported as a field type; \
-                                  use a required inner type")
+                            Some(
+                                "Vec<Option<T>> is not supported as a field type; \
+                                  use a required inner type",
+                            )
                         }
                         _ => None,
                     };
@@ -238,7 +248,6 @@ pub fn map_wire_kind(ty: &Type) -> Option<WireKind> {
             {
                 return map_wire_kind(inner_ty).map(|k| WireKind::VecOf(Box::new(k)));
             }
-
 
             // Option<T> → Optional(inner WireKind)
             if let Some(last) = segments.last()
@@ -535,14 +544,17 @@ mod tests {
 
     #[test]
     fn vec_array_maps_to_vec_of_bytes_fixed() {
-        assert_eq!(map_type(&parse("Vec<[u8; 33]>"), "f").unwrap(), "vec_of_bytes_fixed_33");
+        assert_eq!(
+            map_type(&parse("Vec<[u8; 33]>"), "f").unwrap(),
+            "vec_of_bytes_fixed_33"
+        );
     }
 
     #[test]
     fn vec_u64_wire_kind() {
         assert_eq!(
             map_wire_kind(&parse("Vec<u64>")),
-            Some(WireKind::VecOf(Box::new(WireKind::FixedScalar { size: 8 } )))
+            Some(WireKind::VecOf(Box::new(WireKind::FixedScalar { size: 8 })))
         )
     }
 
@@ -550,7 +562,7 @@ mod tests {
     fn vec_array_wire_kind() {
         assert_eq!(
             map_wire_kind(&parse("Vec<[u8; 33]>")),
-            Some(WireKind::VecOf(Box::new(WireKind::FixedArray { size: 33 } )))
+            Some(WireKind::VecOf(Box::new(WireKind::FixedArray { size: 33 })))
         )
     }
 }
