@@ -1,0 +1,5 @@
+error: variant `Empty` is a unit variant; CkbWitnessUnion requires each variant to carry exactly one field
+  --> tests/ui/fail/union_unit_variant.rs:11:5
+   |
+11 |     Empty,               // unit variant — should error
+   |     ^^^^^

@@ -20,6 +20,10 @@ pub enum WireKind {
     /// Variable-count sequence of typed elements: Vec<T> where T is not u8.
     /// Wire format: 4-byte LE u32 element count, followed by N encoded elements
     VecOf(Box<WireKind>),
+    /// A field whose type implements `WitnessUnion`.
+    /// Decoded by dispatching on a 4-byte LE type ID tag via `decode_union`.
+    /// Signalled by `#[witness(union)]` on the field.
+    Union(syn::Path),
 }
 
 impl core::fmt::Debug for WireKind {
@@ -31,6 +35,7 @@ impl core::fmt::Debug for WireKind {
             Self::Optional(inner) => write!(f, "Optional({inner:?})"),
             Self::Struct(_) => write!(f, "Struct(..)"),
             Self::VecOf(inner) => write!(f, "VecOf({inner:?})"),
+            Self::Union(_) => write!(f, "Union(..)"),
         }
     }
 }

@@ -35,6 +35,24 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
             let wire_kind = registry::map_wire_kind(&f.ty)
                 .expect("map_wire_kind must succeed for any type accepted by map_type");
 
+            // If #[witness(union)] is set, override the WireKind to Union.
+            // map_wire_kind returns Struct for any unrecognised path, so we
+            // replace it here with Union carrying the same path.
+            let wire_kind = if attrs.is_union {
+                match wire_kind {
+                    registry::WireKind::Struct(path) => registry::WireKind::Union(path),
+                    _ => return Err(syn::Error::new_spanned(
+                        &f.ty,
+                        format!(
+                            "field `{field_name}` is marked `#[witness(union)]` but its type \
+                             is not a named path type; only named enum types are supported"
+                        ),
+                    )),
+                }
+            } else {
+                wire_kind
+            };
+
             // 2a. Consistency check: required ↔ Option<T>
             let is_optional_type = matches!(wire_kind, registry::WireKind::Optional(_));
             if is_optional_type && attrs.required {
@@ -116,7 +134,10 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
     let mut seen_struct: Option<&str> = None;
     for meta in &metas {
         let is_opt = matches!(meta.wire_kind, registry::WireKind::Optional(_));
-        let is_struct = matches!(meta.wire_kind, registry::WireKind::Struct(_));
+        let is_struct = matches!(
+            meta.wire_kind,
+            registry::WireKind::Struct(_) | registry::WireKind::Union(_)
+        );
 
         // Nothing may follow a struct field — it must be last.
         if let Some(struct_name) = seen_struct {
@@ -287,6 +308,17 @@ fn impl_ckb_inner_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
     Ok(codegen::emit_inner_impl(&ast.ident, &metas))
 }
 
+fn impl_ckb_witness_union(input: TokenStream2) -> syn::Result<TokenStream2> {
+    let ast = syn::parse2::<DeriveInput>(input)?;
+
+    // Validate: must be an enum with single-field tuple variants.
+    let data_enum = validate::check_enum_single_field_variants(&ast)?;
+
+    // Emit the WitnessUnion trait impl.
+    Ok(codegen::emit_union_impl(&ast.ident, &data_enum.variants))
+}
+
+
 /// Public proc-macro entry point.
 #[proc_macro_derive(CkbWitness, attributes(witness))]
 pub fn ckb_witness(input: TokenStream) -> TokenStream {
@@ -301,6 +333,15 @@ pub fn ckb_witness(input: TokenStream) -> TokenStream {
 pub fn ckb_inner_witness(input: TokenStream) -> TokenStream {
     let input = TokenStream2::from(input);
     match impl_ckb_inner_witness(input) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+#[proc_macro_derive(CkbWitnessUnion)]
+pub fn ckb_witness_union(input: TokenStream) -> TokenStream {
+    let input = TokenStream2::from(input);
+    match impl_ckb_witness_union(input) {
         Ok(ts) => ts.into(),
         Err(e) => e.to_compile_error().into(),
     }

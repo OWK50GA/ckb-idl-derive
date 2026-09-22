@@ -48,9 +48,15 @@ pub fn build_idl(fields: &[FieldMeta]) -> Value {
         .iter()
         .map(|f| {
             let type_str = f.type_override.as_deref().unwrap_or(f.idl_type.as_str());
+            // Union fields get "type": "union" regardless of any override.
+            let effective_type = if matches!(&f.wire_kind, WireKind::Union(_)) {
+                "union"
+            } else {
+                type_str
+            };
             let mut obj = json!({
                 "name": f.name,
-                "type": type_str,
+                "type": effective_type,
                 "required": f.required,
             });
             if let Some(desc) = &f.description {
@@ -133,6 +139,87 @@ pub fn emit_inner_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenS
                 ::core::result::Result::Ok(Self {
                     #(#field_idents),*
                 })
+            }
+        }
+    }
+}
+
+pub fn emit_union_impl(
+    enum_name: &syn::Ident,
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>
+) -> TokenStream {
+    let variant_specs: Vec<TokenStream> = variants
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let type_id = i as u32;
+            let variant_name_str = v.ident.to_string();
+            // The inner type of the single-field tuple variant
+            let inner_ty = match &v.fields {
+                syn::Fields::Unnamed(f) => &f.unnamed[0].ty,
+                _ => unreachable!("Validate ensures single unnamed field"),
+            };
+            quote! {
+                ::ckb_idl_types::UnionVariantSpec {
+                    type_id: #type_id,
+                    name: #variant_name_str,
+                    fields: <#inner_ty as ::ckb_idl_types::WitnessFields>::idl_fields(),
+                }
+            }
+        })
+        .collect();
+
+    // Build one decode arm per variant
+    let decode_arms: Vec<TokenStream> = variants
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let type_id = i as u32;
+            let variant_ident = &v.ident;
+            let inner_ty = match &v.fields {
+                syn::Fields::Unnamed(f) => &f.unnamed[0].ty,
+                _ => unreachable!(),
+            };
+            quote! {
+                #type_id => {
+                    let inner = <#inner_ty as ::ckb_idl_types::WitnessFields>
+                        ::decode_fields(buf, cursor)?;
+                    ::core::result::Result::Ok(#enum_name::#variant_ident(inner))
+                }
+            }
+        })
+        .collect();
+
+    let enum_name_str = enum_name.to_string();
+
+    quote! {
+        impl ::ckb_idl_types::WitnessUnion for #enum_name {
+            fn idl_variants() -> &'static [::ckb_idl_types::UnionVariantSpec] {
+                &[ #(#variant_specs),* ]
+            }
+
+            fn decode_union(
+                buf: &[u8],
+                cursor: &mut usize,
+            ) -> ::core::result::Result<Self, ::ckb_idl_types::WitnessError> {
+                if *cursor + 4 > buf.len() {
+                    return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                        field: #enum_name_str,
+                        expected: 4,
+                        got: buf.len().saturating_sub(*cursor),
+                    });
+                }
+                let __type_id = u32::from_le_bytes(
+                    buf[*cursor..*cursor + 4].try_into().unwrap()
+                );
+                *cursor += 4;
+                match __type_id {
+                    #(#decode_arms)*
+                    _ => Err(::ckb_idl_types::WitnessError::UnknownUnionTypeId {
+                        field: #enum_name_str,
+                        type_id: __type_id,
+                    }),
+                }
             }
         }
     }
@@ -489,6 +576,12 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
 
                 WireKind::Struct(type_path) => quote! {
                     let #ident = <#type_path as ::ckb_idl_types::WitnessFields>::decode_fields(
+                        buf, &mut cursor
+                    )?;
+                },
+
+                WireKind::Union(type_path) => quote! {
+                    let #ident = <#type_path as ::ckb_idl_types::WitnessUnion>::decode_union(
                         buf, &mut cursor
                     )?;
                 },

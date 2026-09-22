@@ -35,6 +35,12 @@ pub enum WitnessError {
         field: &'static str,
         element_index: usize,
     },
+
+    /// The type ID read from the buffer does not match any known union variant
+    UnknownUnionTypeId {
+        field: &'static str,
+        type_id: u32,
+    },
 }
 
 #[derive(Debug)]
@@ -49,4 +55,18 @@ pub trait WitnessFields {
     fn decode_fields(buf: &[u8], cursor: &mut usize) -> Result<Self, WitnessError>
     where
         Self: Sized;
+}
+
+pub struct UnionVariantSpec {
+    /// The 4-byte little-endian type ID assigned in declaration order (0, 1, 2, ...).
+    pub type_id: u32,
+    /// The variant name as a string (e.g. `"Secp256k1"`).
+    pub name: &'static str,
+    /// The IDL fields of the variant's inner type
+    pub fields: &'static [FieldSpec],
+}
+
+pub trait WitnessUnion: Sized {
+    fn idl_variants() -> &'static [UnionVariantSpec];
+    fn decode_union(buf: &[u8], cursor: &mut usize) -> Result<Self, WitnessError>;
 }

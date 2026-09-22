@@ -1,4 +1,4 @@
-use syn::{Data, DeriveInput, Fields, FieldsNamed};
+use syn::{Data, DeriveInput, DataEnum, Fields, FieldsNamed};
 
 pub fn check_named_struct(input: &DeriveInput) -> syn::Result<&FieldsNamed> {
     match &input.data {
@@ -14,6 +14,65 @@ pub fn check_named_struct(input: &DeriveInput) -> syn::Result<&FieldsNamed> {
             )),
         },
     }
+}
+
+pub fn check_enum_single_field_variants(
+    input: &DeriveInput
+) -> syn::Result<&DataEnum> {
+    let data_enum = match &input.data {
+        Data::Enum(e) => e,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                input,
+                "CkbWitnessUnion can only be derived for enums",
+            ));
+        }
+    };
+
+    if data_enum.variants.is_empty() {
+        return Err(syn::Error::new_spanned(
+            input,
+            "CkbWitnessUnion requires at least one variant",
+        ));
+    }
+
+    for variant in &data_enum.variants {
+        match &variant.fields {
+            Fields::Unnamed(f) if f.unnamed.len() == 1 => {},
+            Fields::Unnamed(_) => {
+                return Err(syn::Error::new_spanned(
+                    variant,
+                    format!(
+                        "variant `{}` must have exactly one unnamed field; \
+                        CkbWitnessUnion does not support multi-field tuple variants",
+                        variant.ident,
+                    ),
+                ));
+            }
+            Fields::Named(_) => {
+                return Err(syn::Error::new_spanned(
+                    variant,
+                    format!(
+                        "variant `{}` has named fields; \
+                         CkbWitnessUnion only supports single-field tuple variants",
+                        variant.ident
+                    ),
+                ));
+            }
+            Fields::Unit => {
+                return Err(syn::Error::new_spanned(
+                    variant,
+                    format!(
+                        "variant `{}` is a unit variant; \
+                         CkbWitnessUnion requires each variant to carry exactly one field",
+                        variant.ident
+                    ),
+                ));
+            }
+        }
+    }
+
+    Ok(data_enum)
 }
 
 #[cfg(test)]
