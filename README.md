@@ -2,7 +2,7 @@
 
 A Rust procedural macro that lets CKB lock-script authors declare their witness layout directly in Rust and automatically generate a machine-readable IDL artifact at compile time.
 
-This is the script side of the CKB IDL system. The wallet/tooling side is [`ckb-idl-client`](https://github.com/your-org/ckb-idl-client).
+This is the script side of the CKB IDL system. The wallet/tooling side is [`ckb-idl-client`](https://github.com/OWK50GA/ckb-idl-client).
 
 ---
 
