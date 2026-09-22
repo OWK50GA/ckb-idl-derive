@@ -55,14 +55,26 @@ fn fields_json(fields: &[FieldSchema]) -> Vec<Value> {
 
 fn field_json(field: &FieldSchema) -> Value {
     let mut value = type_json((field.wire_type)());
-    let object = value.as_object_mut().expect("type_json always returns an object");
+    let object = value
+        .as_object_mut()
+        .expect("type_json always returns an object");
     object.insert("name".into(), json!(field.name));
     object.insert("required".into(), json!(field.required));
     if let Some(description) = field.description {
         object.insert("description".into(), json!(description));
     }
-    if let Some(semantic_type) = field.semantic_type {
-        object.insert("semantic_type".into(), json!(semantic_type));
+    // Match the compact macro artifact: a type override is the public `type`.
+    // Preserve the structural encoding separately so recursive exporters and
+    // clients can still decode an arbitrary semantic label.
+    if let Some(semantic_type) = field.semantic_type
+        && object.get("type") != Some(&json!("union"))
+    {
+        let wire_type = object
+            .get("type")
+            .expect("type_json always includes a type")
+            .clone();
+        object.insert("type".into(), json!(semantic_type));
+        object.insert("wire_type".into(), wire_type);
     }
     value
 }
@@ -74,10 +86,16 @@ fn type_json(ty: &TypeSchema) -> Value {
         TypeSchema::Bytes => json!({ "type": "bytes" }),
         TypeSchema::Optional { inner } => {
             let mut value = type_json(inner());
-            value.as_object_mut().unwrap().insert("optional".into(), json!(true));
+            value
+                .as_object_mut()
+                .unwrap()
+                .insert("optional".into(), json!(true));
             value
         }
-        TypeSchema::Vector { element, count_prefix_bits } => json!({
+        TypeSchema::Vector {
+            element,
+            count_prefix_bits,
+        } => json!({
             "type": "vector",
             "count_prefix_bits": count_prefix_bits,
             "items": type_json(element()),

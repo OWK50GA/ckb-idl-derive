@@ -9,16 +9,16 @@ struct Authorization {
 
 #[derive(CkbInnerWitness, Debug, PartialEq)]
 struct Envelope {
-    authorization: Authorization,
     nonce: u16,
+    authorization: Authorization,
 }
 
 #[test]
 fn nested_inner_witness_decodes_a_complete_buffer() {
     let mut wire = Vec::new();
+    wire.extend_from_slice(&7_u16.to_le_bytes());
     wire.extend_from_slice(&[0xaa, 0xbb, 0xcc]);
     wire.extend_from_slice(&42_u64.to_le_bytes());
-    wire.extend_from_slice(&7_u16.to_le_bytes());
 
     let mut cursor = 0;
     let decoded = Envelope::decode_fields(&wire, &mut cursor)
@@ -27,11 +27,11 @@ fn nested_inner_witness_decodes_a_complete_buffer() {
     assert_eq!(
         decoded,
         Envelope {
+            nonce: 7,
             authorization: Authorization {
                 signature: [0xaa, 0xbb, 0xcc],
                 unlock_after_ms: 42,
             },
-            nonce: 7,
         }
     );
     assert_eq!(cursor, wire.len());

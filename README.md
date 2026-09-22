@@ -150,14 +150,14 @@ ckb-idl-export = { path = "../ckb-idl-derive/ckb-idl-export" }
 ```
 
 ```rust
-// src/bin/export_idl.rs
+// examples/export_idl.rs
 ckb_idl_export::export_idl_main!(my_lock::witness::Witness);
 ```
 
 Run it after building the contract:
 
 ```bash
-cargo run --bin export_idl -- artifacts/idl.json
+cargo run --example export_idl -- artifacts/idl.json
 ```
 
 The exporter traverses nested structs and explicit union tags, producing a

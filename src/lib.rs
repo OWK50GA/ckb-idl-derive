@@ -11,53 +11,45 @@ mod validate;
 // Re-export FieldMeta so tests in this file can use it.
 use codegen::FieldMeta;
 
-/// Internal implementation — takes a `proc_macro2::TokenStream` so it can be
-/// called from unit/property tests without going through the proc-macro host.
-fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
-    let ast = syn::parse2::<DeriveInput>(input)?;
-
-    // 1. Validate: must be a named-field struct.
-    let fields_named = validate::check_named_struct(&ast)?;
-
-    // 2. For each field: parse attributes + map type → FieldMeta.
+/// Parse fields into the single representation used by both top-level and
+/// inner witnesses. Keeping this here prevents the two derives from accepting
+/// materially different layouts.
+fn collect_field_metas(fields_named: &syn::FieldsNamed) -> syn::Result<Vec<FieldMeta>> {
     let metas = fields_named
         .named
         .iter()
-        .map(|f| {
-            let field_name = f
+        .map(|field| {
+            let field_name = field
                 .ident
                 .as_ref()
                 .expect("named field has no ident")
                 .to_string();
-
-            let attrs = attr::parse_field_attrs(f)?;
-            let idl_type = registry::map_type(&f.ty, &field_name)?;
-            let wire_kind = registry::map_wire_kind(&f.ty)
+            let attrs = attr::parse_field_attrs(field)?;
+            let idl_type = registry::map_type(&field.ty, &field_name)?;
+            let wire_kind = registry::map_wire_kind(&field.ty)
                 .expect("map_wire_kind must succeed for any type accepted by map_type");
 
-            // If #[witness(union)] is set, override the WireKind to Union.
-            // map_wire_kind returns Struct for any unrecognised path, so we
-            // replace it here with Union carrying the same path.
             let wire_kind = if attrs.is_union {
                 match wire_kind {
                     registry::WireKind::Struct(path) => registry::WireKind::Union(path),
-                    _ => return Err(syn::Error::new_spanned(
-                        &f.ty,
-                        format!(
-                            "field `{field_name}` is marked `#[witness(union)]` but its type \
-                             is not a named path type; only named enum types are supported"
-                        ),
-                    )),
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            &field.ty,
+                            format!(
+                                "field `{field_name}` is marked `#[witness(union)]` but its type \
+                                 is not a named path type; only named enum types are supported"
+                            ),
+                        ));
+                    }
                 }
             } else {
                 wire_kind
             };
 
-            // 2a. Consistency check: required ↔ Option<T>
-            let is_optional_type = matches!(wire_kind, registry::WireKind::Optional(_));
+            let is_optional_type = matches!(&wire_kind, registry::WireKind::Optional(_));
             if is_optional_type && attrs.required {
                 return Err(syn::Error::new_spanned(
-                    &f.ty,
+                    &field.ty,
                     format!(
                         "field `{field_name}` is `Option<T>` but `required = true`; \
                          either add `#[witness(required = false)]` or use a non-optional type"
@@ -66,19 +58,16 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
             }
             if !is_optional_type && !attrs.required {
                 return Err(syn::Error::new_spanned(
-                    &f.ty,
+                    &field.ty,
                     format!(
                         "field `{field_name}` is marked `required = false` but its type is not \
                          `Option<T>`; wrap the type in `Option<...>` or remove `required = false`"
                     ),
                 ));
             }
-            // Option<NamedStruct> is not supported: the Optional decoder has
-            // no WireKind::Struct arm and there is no safe framing convention
-            // for an optional nested struct under the trailing-exhaustion model.
             if matches!(&wire_kind, registry::WireKind::Optional(inner) if matches!(inner.as_ref(), registry::WireKind::Struct(_))) {
                 return Err(syn::Error::new_spanned(
-                    &f.ty,
+                    &field.ty,
                     format!(
                         "field `{field_name}` is `Option<NamedStruct>` which is not supported; \
                          optional nested structs have no safe wire boundary under the \
@@ -86,17 +75,13 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
                     ),
                 ));
             }
-
-            // Option<Vec<T>> where T is not u8 is also not supported - the element
-            // count prefix inside the optional makes the trailing-exhaustion boundary 
-            // unreliable when followed by other fields.
             if matches!(&wire_kind, registry::WireKind::Optional(inner) if matches!(inner.as_ref(), registry::WireKind::VecOf(_))) {
                 return Err(syn::Error::new_spanned(
-                    &f.ty,
+                    &field.ty,
                     format!(
-                        "field `{field_name}` is `Option<Vec<T>>` where T is not a u8, which is not\
-                        supported; use a required Vec<T> or `Option<Vec<u8>>` instead"
-                    )
+                        "field `{field_name}` is `Option<Vec<T>>` where T is not a u8, which is not \
+                         supported; use a required Vec<T> or `Option<Vec<u8>>` instead"
+                    ),
                 ));
             }
 
@@ -111,51 +96,31 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
         })
         .collect::<syn::Result<Vec<_>>>()?;
 
-    // 2b. Ordering check: Optional fields must come after all required fields.
-    // The buffer-exhaustion convention used to decode None only works when
-    // there are no required fields after the optional ones.
-    // Additionally, a Struct field (CkbInnerWitness) that contains optional
-    // trailing fields must itself be the last non-optional field in the parent,
-    // for the same reason — we cannot distinguish its trailing exhaustion from
-    // the start of the next parent field. For simplicity we reject Struct fields
-    // that appear before any optional field in the parent.
     let mut seen_optional = false;
-    let mut seen_struct: Option<&str> = None;
-    for meta in &metas {
-        let is_opt = matches!(meta.wire_kind, registry::WireKind::Optional(_));
-        let is_struct = matches!(
-            meta.wire_kind,
+    let mut seen_nested: Option<&str> = None;
+    for (field, meta) in fields_named.named.iter().zip(&metas) {
+        let is_optional = matches!(&meta.wire_kind, registry::WireKind::Optional(_));
+        let is_nested = matches!(
+            &meta.wire_kind,
             registry::WireKind::Struct(_) | registry::WireKind::Union(_)
         );
 
-        // Nothing may follow a struct field — it must be last.
-        if let Some(struct_name) = seen_struct {
-            let offending = fields_named
-                .named
-                .iter()
-                .find(|f| f.ident.as_ref().map(|i| i.to_string()).as_deref() == Some(&meta.name))
-                .expect("field must exist");
+        if let Some(nested_name) = seen_nested {
             return Err(syn::Error::new_spanned(
-                &offending.ty,
+                &field.ty,
                 format!(
-                    "field `{}` appears after nested struct field `{}`; \
+                    "field `{}` appears after nested struct field `{nested_name}`; \
                      a nested struct field must be the last field in the struct \
                      because its optional trailing fields use buffer exhaustion",
-                    meta.name, struct_name
+                    meta.name
                 ),
             ));
         }
-
-        if is_opt {
+        if is_optional {
             seen_optional = true;
         } else if seen_optional {
-            let offending = fields_named
-                .named
-                .iter()
-                .find(|f| f.ident.as_ref().map(|i| i.to_string()).as_deref() == Some(&meta.name))
-                .expect("field must exist");
             return Err(syn::Error::new_spanned(
-                &offending.ty,
+                &field.ty,
                 format!(
                     "required field `{}` appears after an optional field; \
                      all `Option<T>` fields must come last in the struct",
@@ -163,15 +128,9 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
                 ),
             ));
         }
-
-        if is_struct && seen_optional {
-            let offending = fields_named
-                .named
-                .iter()
-                .find(|f| f.ident.as_ref().map(|i| i.to_string()).as_deref() == Some(&meta.name))
-                .expect("field must exist");
+        if is_nested && seen_optional {
             return Err(syn::Error::new_spanned(
-                &offending.ty,
+                &field.ty,
                 format!(
                     "nested struct field `{}` appears after an optional field; \
                      nested struct fields must come before all `Option<T>` fields",
@@ -179,13 +138,25 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
                 ),
             ));
         }
-
-        if is_struct {
-            seen_struct = Some(&meta.name);
+        if is_nested {
+            seen_nested = Some(&meta.name);
         }
     }
 
-    // 3. Build IDL JSON and serialise.
+    Ok(metas)
+}
+
+/// Internal implementation — takes a `proc_macro2::TokenStream` so it can be
+/// called from unit/property tests without going through the proc-macro host.
+fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
+    let ast = syn::parse2::<DeriveInput>(input)?;
+
+    // 1. Validate: must be a named-field struct.
+    let fields_named = validate::check_named_struct(&ast)?;
+
+    // 2. Parse and validate the shared field layout.
+    let metas = collect_field_metas(fields_named)?;
+
     let idl = codegen::build_idl(&metas);
     let json =
         serde_json::to_string(&idl).expect("serde_json serialisation is infallible for this value");
@@ -208,88 +179,7 @@ fn impl_ckb_inner_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
     // Same validation as CkbWitness i.e. must be a named-field struct
     let fields_named = validate::check_named_struct(&ast)?;
 
-    // Same field parsing pipeline as CkbWitness
-    let metas = fields_named
-        .named
-        .iter()
-        .map(|f| {
-            let field_name = f
-                .ident
-                .as_ref()
-                .expect("named field has no ident")
-                .to_string();
-
-            let attrs = attr::parse_field_attrs(f)?;
-            let idl_type = registry::map_type(&f.ty, &field_name)?;
-            let wire_kind = registry::map_wire_kind(&f.ty)
-                .expect("map_wire_kind must succeed for any type accepted by map_type");
-
-            let is_optional_type = matches!(wire_kind, registry::WireKind::Optional(_));
-            if is_optional_type && attrs.required {
-                return Err(syn::Error::new_spanned(
-                    &f.ty,
-                    format!(
-                        "field `{field_name}` is `Option<T>` but `required = true`; \
-                         either add `#[witness(required = false)]` or use a non-optional type"
-                    ),
-                ));
-            }
-            if !is_optional_type && !attrs.required {
-                return Err(syn::Error::new_spanned(
-                    &f.ty,
-                    format!(
-                        "field `{field_name}` is marked `required = false` but its type is not \
-                         `Option<T>`; wrap the type in `Option<...>` or remove `required = false`"
-                    ),
-                ));
-            }
-            // Option<NamedStruct> is not supported: the Optional decoder has
-            // no WireKind::Struct arm and there is no safe framing convention
-            // for an optional nested struct under the trailing-exhaustion model.
-            if matches!(&wire_kind, registry::WireKind::Optional(inner) if matches!(inner.as_ref(), registry::WireKind::Struct(_))) {
-                return Err(syn::Error::new_spanned(
-                    &f.ty,
-                    format!(
-                        "field `{field_name}` is `Option<NamedStruct>` which is not supported; \
-                         optional nested structs have no safe wire boundary under the \
-                         trailing-exhaustion encoding — use `Option<Vec<u8>>` and decode manually"
-                    ),
-                ));
-            }
-
-            Ok(FieldMeta {
-                name: field_name,
-                idl_type,
-                required: attrs.required,
-                description: attrs.description,
-                type_override: attrs.type_override,
-                wire_kind
-            })
-        })
-        .collect::<syn::Result<Vec<_>>>()?;
-
-    // Same ordering check as CkbWitness
-    let mut seen_optional = false;
-    for meta in &metas {
-        let is_opt = matches!(meta.wire_kind, registry::WireKind::Optional(_));
-        if is_opt {
-            seen_optional = true;
-        } else if seen_optional {
-            let offending = fields_named
-                .named
-                .iter()
-                .find(|f| f.ident.as_ref().map(|i| i.to_string()).as_deref() == Some(&meta.name))
-                .expect("field must exist");
-            return Err(syn::Error::new_spanned(
-                &offending.ty,
-                format!(
-                    "required field `{}` appears after an optional field; \
-                     all `Option<T>` fields must come last in the struct",
-                    meta.name
-                ),
-            ));
-        }
-    }
+    let metas = collect_field_metas(fields_named)?;
 
     // No idl.json written, instead offloaded to CkbWitness
     // Also no from_witness_args emitted, that is not our concern
@@ -320,9 +210,12 @@ fn impl_ckb_witness_union(input: TokenStream2) -> syn::Result<TokenStream2> {
     }
 
     // Emit the WitnessUnion trait impl.
-    Ok(codegen::emit_union_impl(&ast.ident, &data_enum.variants, &tags))
+    Ok(codegen::emit_union_impl(
+        &ast.ident,
+        &data_enum.variants,
+        &tags,
+    ))
 }
-
 
 /// Public proc-macro entry point.
 #[proc_macro_derive(CkbWitness, attributes(witness))]

@@ -92,11 +92,7 @@ fn emit_schema_support(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenS
         .iter()
         .enumerate()
         .map(|(index, field)| {
-            let provider = format_ident!(
-                "__ckb_idl_schema_{}_{}",
-                struct_name,
-                index
-            );
+            let provider = format_ident!("__ckb_idl_schema_{}_{}", struct_name, index);
             emit_type_provider(&provider, &field.wire_kind)
         })
         .collect();
@@ -105,11 +101,7 @@ fn emit_schema_support(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenS
         .iter()
         .enumerate()
         .map(|(index, field)| {
-            let provider = format_ident!(
-                "__ckb_idl_schema_{}_{}",
-                struct_name,
-                index
-            );
+            let provider = format_ident!("__ckb_idl_schema_{}_{}", struct_name, index);
             let name = &field.name;
             let required = field.required;
             let description = match &field.description {

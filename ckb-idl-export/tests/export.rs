@@ -25,6 +25,8 @@ enum Authorization {
 
 #[derive(CkbWitness)]
 struct Witness {
+    #[witness(type = "blake2b_hash")]
+    digest: [u8; 32],
     #[witness(union, description = "Authorization method")]
     authorization: Authorization,
 }
@@ -32,8 +34,11 @@ struct Witness {
 #[test]
 fn exports_nested_union_variants() {
     let document = document_for::<Witness>();
-    let auth = &document["witness"][0];
+    let digest = &document["witness"][0];
+    let auth = &document["witness"][1];
     assert_eq!(document["idl_version"], "0.1");
+    assert_eq!(digest["type"], "blake2b_hash");
+    assert_eq!(digest["wire_type"], "bytes_fixed_32");
     assert_eq!(auth["type"], "union");
     assert_eq!(auth["variants"][0]["tag"], 7);
     assert_eq!(auth["variants"][0]["fields"][0]["name"], "signature");
