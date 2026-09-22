@@ -1,4 +1,4 @@
-error: unrecognised witness attribute key `foo`; supported keys are: required, description, type
+error: unrecognised witness attribute key `foo`; supported keys are: required, description, type, union
  --> tests/ui/fail/unknown_attr_key.rs:5:15
   |
 5 |     #[witness(foo = "bar")]

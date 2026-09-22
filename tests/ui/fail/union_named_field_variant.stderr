@@ -1,0 +1,5 @@
+error: variant `Variant` has named fields; CkbWitnessUnion only supports single-field tuple variants
+ --> tests/ui/fail/union_named_field_variant.rs:5:5
+  |
+5 |     Variant { sig: [u8; 65] },   // named fields — should error
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: variant `Secp256k1` must have exactly one unnamed field; CkbWitnessUnion does not support multi-field tuple variants
+ --> tests/ui/fail/union_multi_field_variant.rs:9:5
+  |
+9 |     Secp256k1(Secp256k1Witness, u64),  // two fields — should error
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
