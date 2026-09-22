@@ -37,10 +37,7 @@ pub enum WitnessError {
     },
 
     /// The type ID read from the buffer does not match any known union variant
-    UnknownUnionTypeId {
-        field: &'static str,
-        type_id: u32,
-    },
+    UnknownUnionTypeId { field: &'static str, type_id: u32 },
 }
 
 #[derive(Debug)]

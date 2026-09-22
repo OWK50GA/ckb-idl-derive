@@ -99,9 +99,17 @@ impl Parse for WitnessItem {
         if input.peek(Token![=]) {
             let _eq: Token![=] = input.parse()?;
             let value: Lit = input.parse()?;
-            Ok(WitnessItem { key, key_span, value: Some(value) })
+            Ok(WitnessItem {
+                key,
+                key_span,
+                value: Some(value),
+            })
         } else {
-            Ok(WitnessItem { key, key_span, value: None })
+            Ok(WitnessItem {
+                key,
+                key_span,
+                value: None,
+            })
         }
     }
 }
@@ -148,7 +156,10 @@ pub fn parse_field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
                 }
                 "required" => {
                     let value = item.value.ok_or_else(|| {
-                        syn::Error::new(item.key_span, "`required` requires a value: `required = true` or `required = false`")
+                        syn::Error::new(
+                            item.key_span,
+                            "`required` requires a value: `required = true` or `required = false`",
+                        )
                     })?;
                     if let Lit::Bool(LitBool { value, .. }) = value {
                         required = value;
@@ -335,8 +346,7 @@ mod tests {
 
     #[test]
     fn union_flag_sets_is_union() {
-        let s: ItemStruct =
-            parse_quote! { struct S { #[witness(union)] auth: AuthMethod } };
+        let s: ItemStruct = parse_quote! { struct S { #[witness(union)] auth: AuthMethod } };
         let attrs = parse_field_attrs(&first_field(s)).unwrap();
         assert!(attrs.is_union);
         assert!(attrs.required); // default
@@ -346,8 +356,7 @@ mod tests {
 
     #[test]
     fn union_flag_with_description() {
-        let s: ItemStruct =
-            parse_quote! { struct S { #[witness(union, description = "auth method")] auth: AuthMethod } };
+        let s: ItemStruct = parse_quote! { struct S { #[witness(union, description = "auth method")] auth: AuthMethod } };
         let attrs = parse_field_attrs(&first_field(s)).unwrap();
         assert!(attrs.is_union);
         assert_eq!(attrs.description.as_deref(), Some("auth method"));
@@ -355,8 +364,7 @@ mod tests {
 
     #[test]
     fn union_flag_with_value_is_error() {
-        let s: ItemStruct =
-            parse_quote! { struct S { #[witness(union = true)] auth: AuthMethod } };
+        let s: ItemStruct = parse_quote! { struct S { #[witness(union = true)] auth: AuthMethod } };
         let err = parse_field_attrs(&first_field(s)).unwrap_err();
         assert!(err.to_string().contains("bare flag"), "{}", err);
     }
@@ -388,9 +396,11 @@ mod tests {
     #[test]
     fn union_variant_tag_is_required() {
         let variant: syn::Variant = parse_quote! { Multisig(Payload) };
-        assert!(parse_union_variant_tag(&variant)
-            .unwrap_err()
-            .to_string()
-            .contains("missing `#[witness(tag = N)]`"));
+        assert!(
+            parse_union_variant_tag(&variant)
+                .unwrap_err()
+                .to_string()
+                .contains("missing `#[witness(tag = N)]`")
+        );
     }
 }

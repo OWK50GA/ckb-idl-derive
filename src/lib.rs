@@ -320,9 +320,12 @@ fn impl_ckb_witness_union(input: TokenStream2) -> syn::Result<TokenStream2> {
     }
 
     // Emit the WitnessUnion trait impl.
-    Ok(codegen::emit_union_impl(&ast.ident, &data_enum.variants, &tags))
+    Ok(codegen::emit_union_impl(
+        &ast.ident,
+        &data_enum.variants,
+        &tags,
+    ))
 }
-
 
 /// Public proc-macro entry point.
 #[proc_macro_derive(CkbWitness, attributes(witness))]
