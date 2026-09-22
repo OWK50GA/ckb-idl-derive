@@ -271,6 +271,91 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                     };
                 },
 
+                WireKind::VecOf(inner) => {
+                    // For each inner kind, generate the element decode expression
+                    // Produce a closure-like block that decodes one element and 
+                    // returns it, then call it in a loop
+                    let elem_decode = match inner.as_ref() {
+                        WireKind::FixedScalar { size: 1 } => quote! {{
+                            if __cur + 1 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::VecElementsTooShort {
+                                    field: #name_str, element_index: __i,
+                                });
+                            }
+                            let v = buf[__cur]; __cur += 1; v
+                        }},
+                        WireKind::FixedScalar { size: 2 } => quote! {{
+                            if __cur + 2 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::VecElementsTooShort {
+                                    field: #name_str, element_index: __i,
+                                });
+                            }
+                            let v = u16::from_le_bytes(buf[__cur..__cur+2].try_into().unwrap()); __cur += 2; v
+                        }},
+                        WireKind::FixedScalar { size: 4 } => quote! {{
+                            if __cur + 4 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::VecElementsTooShort {
+                                    field: #name_str, element_index: __i,
+                                });
+                            }
+                            let v = u32::from_le_bytes(buf[__cur..__cur+4].try_into().unwrap()); __cur += 4; v
+                        }},
+                        WireKind::FixedScalar { size: 8 } => quote! {{
+                            if __cur + 8 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::VecElementsTooShort {
+                                    field: #name_str, element_index: __i,
+                                });
+                            }
+                            let v = u64::from_le_bytes(buf[__cur..__cur+8].try_into().unwrap()); __cur += 8; v
+                        }},
+                        WireKind::FixedScalar { size: 16 } => quote! {{
+                            if __cur + 16 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::VecElementsTooShort {
+                                    field: #name_str, element_index: __i,
+                                });
+                            }
+                            let v = u128::from_le_bytes(buf[__cur..__cur+16].try_into().unwrap()); __cur += 16; v
+                        }},
+                        WireKind::FixedArray { size } => quote! {{
+                            if __cur + #size > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::VecElementsTooShort {
+                                    field: #name_str, element_index: __i,
+                                });
+                            }
+                            let mut arr = [0u8; #size];
+                            arr.copy_from_slice(&buf[__cur..__cur + #size]);
+                            __cur += #size;
+                            arr
+                        }},
+                        WireKind::Struct(type_path) => quote! {
+                            <#type_path as ::ckb_idl_types::WitnessFields>::decode_fields(buf, &mut __cur)?
+                        },
+                        _ => quote! { compile_error!("unsupported VecOf inner kind in CkbWitness codegen"); },
+                    };
+                    quote! {
+                        let #ident = {
+                            if cursor + 4 > buf.len() {
+                                return Err(::ckb_idl_types::WitnessError::FieldTooShort {
+                                    field: #name_str,
+                                    expected: 4,
+                                    got: buf.len().saturating_sub(cursor),
+                                });
+                            }
+                            let __count = u32::from_le_bytes(
+                                buf[cursor..cursor + 4].try_into().unwrap()
+                            ) as usize;
+                            cursor += 4;
+                            let mut __cur = cursor;
+                            let mut __vec = ::alloc::vec::Vec::with_capacity(__count);
+                            for __i in 0..__count {
+                                __vec.push(#elem_decode);
+                            }
+                            cursor = __cur;
+                            __vec
+                        };
+                    }
+                },
+
                 WireKind::Optional(inner) => match inner.as_ref() {
                     WireKind::VarBytes => quote! {
                         let #ident: ::core::option::Option<::alloc::vec::Vec<u8>> = {

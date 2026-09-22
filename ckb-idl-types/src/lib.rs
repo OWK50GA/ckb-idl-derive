@@ -28,6 +28,13 @@ pub enum WitnessError {
         /// Total buffer length.
         total: usize,
     },
+
+    /// The element-count prefix of a `Vec<T>` field was read, but the buffer
+    /// did not contain enough bytes to decode all declared elements.
+    VecElementsTooShort {
+        field: &'static str,
+        element_index: usize,
+    },
 }
 
 #[derive(Debug)]

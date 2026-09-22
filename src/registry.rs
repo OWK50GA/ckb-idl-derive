@@ -17,6 +17,9 @@ pub enum WireKind {
     /// Decoded by delegating to `<T as WitnessFields>::decode_fields`.
     /// The type path is stored so codegen can emit the correct trait call.
     Struct(syn::Path),
+    /// Variable-count sequence of typed elements: Vec<T> where T is not u8.
+    /// Wire format: 4-byte LE u32 element count, followed by N encoded elements
+    VecOf(Box<WireKind>),
 }
 
 impl core::fmt::Debug for WireKind {
@@ -27,6 +30,7 @@ impl core::fmt::Debug for WireKind {
             Self::VarBytes => write!(f, "VarBytes"),
             Self::Optional(inner) => write!(f, "Optional({inner:?})"),
             Self::Struct(_) => write!(f, "Struct(..)"),
+            Self::VecOf(inner) => write!(f, "VecOf({inner:?})"),
         }
     }
 }
@@ -39,6 +43,7 @@ impl PartialEq for WireKind {
             (Self::VarBytes, Self::VarBytes) => true,
             (Self::Optional(a), Self::Optional(b)) => a == b,
             // Struct variants carry a syn::Path which has no PartialEq — treat as unequal.
+            (Self::VecOf(a), Self::VecOf(b)) => a == b,
             _ => false,
         }
     }
@@ -101,6 +106,16 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
 
                         return map_type(inner_ty, field_name);
                     }
+                }
+                // Vec<T> where T is not u8 — check this after Vec<u8>
+                if let Some(last) = segments.last()
+                    && last.ident == "Vec"
+                    && let PathArguments::AngleBracketed(ref args) = last.arguments
+                    && args.args.len() == 1
+                    && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
+                {
+                    let inner_idl = map_type(inner_ty, field_name)?;
+                    return Ok(format!("vec_of_{inner_idl}"));
                 }
             }
 
@@ -168,6 +183,17 @@ pub fn map_wire_kind(ty: &Type) -> Option<WireKind> {
             {
                 return Some(WireKind::VarBytes);
             }
+
+            // Vec<T> where T is not u8 → VecOf(inner WireKind)
+            if let Some(last) = segments.last()
+                && last.ident == "Vec"
+                && let PathArguments::AngleBracketed(ref args) = last.arguments
+                && args.args.len() == 1
+                && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
+            {
+                return map_wire_kind(inner_ty).map(|k| WireKind::VecOf(Box::new(k)));
+            }
+
 
             // Option<T> → Optional(inner WireKind)
             if let Some(last) = segments.last()
@@ -454,5 +480,32 @@ mod tests {
                 size: 1
             })))
         );
+    }
+
+    // ── Vec<T> tests ───────────────────────────────────────────────────────
+    #[test]
+    fn vec_u64_maps_to_vec_of_uint64() {
+        assert_eq!(map_type(&parse("Vec<u64>"), "f").unwrap(), "vec_of_uint64");
+    }
+
+    #[test]
+    fn vec_array_maps_to_vec_of_bytes_fixed() {
+        assert_eq!(map_type(&parse("Vec<[u8; 33]>"), "f").unwrap(), "vec_of_bytes_fixed_33");
+    }
+
+    #[test]
+    fn vec_u64_wire_kind() {
+        assert_eq!(
+            map_wire_kind(&parse("Vec<u64>")),
+            Some(WireKind::VecOf(Box::new(WireKind::FixedScalar { size: 8 } )))
+        )
+    }
+
+    #[test]
+    fn vec_array_wire_kind() {
+        assert_eq!(
+            map_wire_kind(&parse("Vec<[u8; 33]>")),
+            Some(WireKind::VecOf(Box::new(WireKind::FixedArray { size: 33 } )))
+        )
     }
 }
