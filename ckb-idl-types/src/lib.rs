@@ -47,7 +47,66 @@ pub struct FieldSpec {
     pub required: bool,
     pub description: Option<&'static str>,
 }
-pub trait WitnessFields {
+
+/// A field description that preserves the complete wire structure for host-side
+/// LS-IDL export. This stays allocation-free so derives can emit it in CKB
+/// `no_std` contracts.
+pub struct FieldSchema {
+    pub name: &'static str,
+    pub required: bool,
+    pub description: Option<&'static str>,
+    pub semantic_type: Option<&'static str>,
+    pub wire_type: fn() -> &'static TypeSchema,
+}
+
+pub struct StructSchema {
+    pub fields: &'static [FieldSchema],
+}
+
+pub enum TypeSchema {
+    Uint {
+        bits: u16,
+    },
+    FixedBytes {
+        length: usize,
+    },
+    Bytes,
+    Optional {
+        inner: fn() -> &'static TypeSchema,
+    },
+    Vector {
+        element: fn() -> &'static TypeSchema,
+        count_prefix_bits: u8,
+    },
+    Struct {
+        schema: fn() -> &'static StructSchema,
+    },
+    Union {
+        schema: fn() -> &'static UnionSchema,
+    },
+}
+
+pub struct UnionVariantSchema {
+    pub tag: u32,
+    pub name: &'static str,
+    pub schema: fn() -> &'static StructSchema,
+}
+
+pub struct UnionSchema {
+    pub variants: &'static [UnionVariantSchema],
+}
+
+pub trait WitnessSchema {
+    fn schema() -> &'static StructSchema;
+}
+
+pub trait WitnessFields: WitnessSchema {
+    /// Exposes the supertrait schema through the same trait bound used for
+    /// field decoding, keeping generated diagnostics focused on one contract.
+    fn field_schema() -> &'static StructSchema {
+        <Self as WitnessSchema>::schema()
+    }
+
     fn idl_fields() -> &'static [FieldSpec];
     fn decode_fields(buf: &[u8], cursor: &mut usize) -> Result<Self, WitnessError>
     where
@@ -68,6 +127,7 @@ pub struct UnionVariantSpec {
 }
 
 pub trait WitnessUnion: Sized {
+    fn schema() -> &'static UnionSchema;
     fn idl_variants() -> &'static [UnionVariantSpec];
     fn decode_union(buf: &[u8], cursor: &mut usize) -> Result<Self, WitnessError>;
 }

@@ -47,7 +47,9 @@ impl PartialEq for WireKind {
             (Self::FixedArray { size: a }, Self::FixedArray { size: b }) => a == b,
             (Self::VarBytes, Self::VarBytes) => true,
             (Self::Optional(a), Self::Optional(b)) => a == b,
-            // Struct variants carry a syn::Path which has no PartialEq — treat as unequal.
+            (Self::Struct(a), Self::Struct(b)) | (Self::Union(a), Self::Union(b)) => {
+                quote::quote!(#a).to_string() == quote::quote!(#b).to_string()
+            }
             (Self::VecOf(a), Self::VecOf(b)) => a == b,
             _ => false,
         }
@@ -492,6 +494,25 @@ mod tests {
             map_wire_kind(&parse("[u8; 128]")),
             Some(WireKind::FixedArray { size: 128 })
         );
+    }
+
+    #[test]
+    fn path_wire_kinds_are_reflexive_and_distinguish_paths() {
+        let auth = map_wire_kind(&parse("AuthMethod")).unwrap();
+        let other = map_wire_kind(&parse("OtherMethod")).unwrap();
+        assert_eq!(auth, auth.clone());
+        assert_ne!(auth, other);
+
+        let union_auth = WireKind::Union(match parse("AuthMethod") {
+            Type::Path(path) => path.path,
+            _ => unreachable!(),
+        });
+        let union_other = WireKind::Union(match parse("OtherMethod") {
+            Type::Path(path) => path.path,
+            _ => unreachable!(),
+        });
+        assert_eq!(union_auth, union_auth.clone());
+        assert_ne!(union_auth, union_other);
     }
 
     #[test]

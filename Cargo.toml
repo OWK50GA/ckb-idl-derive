@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "ckb-idl-types"]
+members = [".", "ckb-idl-types", "ckb-idl-export"]
 
 [package]
 name = "ckb-idl-derive"
