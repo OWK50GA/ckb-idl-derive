@@ -1,0 +1,5 @@
+error: unsupported element type for field `items`: Vec<NamedStruct> is not supported; nested structs in a Vec have no safe element boundary under the current wire format
+ --> tests/ui/fail/vec_of_unknown_inner.rs:8:16
+  |
+8 |     items: Vec<String>,
+  |                ^^^^^^

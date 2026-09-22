@@ -17,6 +17,9 @@ pub enum WireKind {
     /// Decoded by delegating to `<T as WitnessFields>::decode_fields`.
     /// The type path is stored so codegen can emit the correct trait call.
     Struct(syn::Path),
+    /// Variable-count sequence of typed elements: Vec<T> where T is not u8.
+    /// Wire format: 4-byte LE u32 element count, followed by N encoded elements
+    VecOf(Box<WireKind>),
 }
 
 impl core::fmt::Debug for WireKind {
@@ -27,6 +30,7 @@ impl core::fmt::Debug for WireKind {
             Self::VarBytes => write!(f, "VarBytes"),
             Self::Optional(inner) => write!(f, "Optional({inner:?})"),
             Self::Struct(_) => write!(f, "Struct(..)"),
+            Self::VecOf(inner) => write!(f, "VecOf({inner:?})"),
         }
     }
 }
@@ -39,6 +43,7 @@ impl PartialEq for WireKind {
             (Self::VarBytes, Self::VarBytes) => true,
             (Self::Optional(a), Self::Optional(b)) => a == b,
             // Struct variants carry a syn::Path which has no PartialEq — treat as unequal.
+            (Self::VecOf(a), Self::VecOf(b)) => a == b,
             _ => false,
         }
     }
@@ -101,6 +106,71 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
 
                         return map_type(inner_ty, field_name);
                     }
+                }
+                // Vec<T> where T is not u8 — check this after Vec<u8>
+                if let Some(last) = segments.last()
+                    && last.ident == "Vec"
+                    && let PathArguments::AngleBracketed(ref args) = last.arguments
+                    && args.args.len() == 1
+                    && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
+                {
+                    // Reject element types that have no supported VecOf decoder arm.
+                    // Supported: scalars, [u8; N], named structs (WitnessFields).
+                    // Unsupported: Vec<Vec<T>>, Vec<Option<T>>, Vec<[non-u8; N]>.
+                    let reject = match inner_ty {
+                        // Vec<Vec<T>> — nested vectors are not supported.
+                        Type::Path(p)
+                            if p.path
+                                .segments
+                                .last()
+                                .map(|s| s.ident == "Vec")
+                                .unwrap_or(false) =>
+                        {
+                            Some(
+                                "Vec<Vec<T>> is not supported as a field type; \
+                                  use a named struct with a Vec<u8> field instead",
+                            )
+                        }
+                        // Vec<Option<T>> — optional elements are not supported.
+                        Type::Path(p)
+                            if p.path
+                                .segments
+                                .last()
+                                .map(|s| s.ident == "Option")
+                                .unwrap_or(false) =>
+                        {
+                            Some(
+                                "Vec<Option<T>> is not supported as a field type; \
+                                  use a required inner type",
+                            )
+                        }
+                        _ => None,
+                    };
+                    if let Some(msg) = reject {
+                        return Err(syn::Error::new_spanned(
+                            inner_ty,
+                            format!("unsupported element type for field `{field_name}`: {msg}"),
+                        ));
+                    }
+                    // Vec<T> where T is a named struct — rejected because we
+                    // cannot know at macro expansion time whether the inner struct
+                    // has optional trailing fields, making the element boundary
+                    // unsafe without a per-element length prefix.
+                    // Structs in Vec context would need a separate framing scheme.
+                    // Reject at map_type so the codegen never sees VecOf(Struct).
+                    let inner_kind = map_wire_kind(inner_ty);
+                    if matches!(inner_kind, Some(crate::registry::WireKind::Struct(_))) {
+                        return Err(syn::Error::new_spanned(
+                            inner_ty,
+                            format!(
+                                "unsupported element type for field `{field_name}`: \
+                                 Vec<NamedStruct> is not supported; nested structs in a Vec \
+                                 have no safe element boundary under the current wire format"
+                            ),
+                        ));
+                    }
+                    let inner_idl = map_type(inner_ty, field_name)?;
+                    return Ok(format!("vec_of_{inner_idl}"));
                 }
             }
 
@@ -167,6 +237,16 @@ pub fn map_wire_kind(ty: &Type) -> Option<WireKind> {
                 && inner.path.is_ident("u8")
             {
                 return Some(WireKind::VarBytes);
+            }
+
+            // Vec<T> where T is not u8 → VecOf(inner WireKind)
+            if let Some(last) = segments.last()
+                && last.ident == "Vec"
+                && let PathArguments::AngleBracketed(ref args) = last.arguments
+                && args.args.len() == 1
+                && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
+            {
+                return map_wire_kind(inner_ty).map(|k| WireKind::VecOf(Box::new(k)));
             }
 
             // Option<T> → Optional(inner WireKind)
@@ -454,5 +534,35 @@ mod tests {
                 size: 1
             })))
         );
+    }
+
+    // ── Vec<T> tests ───────────────────────────────────────────────────────
+    #[test]
+    fn vec_u64_maps_to_vec_of_uint64() {
+        assert_eq!(map_type(&parse("Vec<u64>"), "f").unwrap(), "vec_of_uint64");
+    }
+
+    #[test]
+    fn vec_array_maps_to_vec_of_bytes_fixed() {
+        assert_eq!(
+            map_type(&parse("Vec<[u8; 33]>"), "f").unwrap(),
+            "vec_of_bytes_fixed_33"
+        );
+    }
+
+    #[test]
+    fn vec_u64_wire_kind() {
+        assert_eq!(
+            map_wire_kind(&parse("Vec<u64>")),
+            Some(WireKind::VecOf(Box::new(WireKind::FixedScalar { size: 8 })))
+        )
+    }
+
+    #[test]
+    fn vec_array_wire_kind() {
+        assert_eq!(
+            map_wire_kind(&parse("Vec<[u8; 33]>")),
+            Some(WireKind::VecOf(Box::new(WireKind::FixedArray { size: 33 })))
+        )
     }
 }
