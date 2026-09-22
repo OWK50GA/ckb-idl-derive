@@ -58,12 +58,16 @@ pub trait WitnessFields {
 }
 
 pub struct UnionVariantSpec {
-    /// The 4-byte little-endian type ID assigned in declaration order (0, 1, 2, ...).
+    /// The stable 4-byte little-endian type ID declared by `#[witness(tag = N)]`.
     pub type_id: u32,
     /// The variant name as a string (e.g. `"Secp256k1"`).
     pub name: &'static str,
-    /// The IDL fields of the variant's inner type
-    pub fields: &'static [FieldSpec],
+    /// A provider for the IDL fields of the variant's inner type.
+    ///
+    /// This is a function pointer rather than a slice so a union can expose a
+    /// static variant table while each inner type owns its own static field
+    /// table.
+    pub fields: fn() -> &'static [FieldSpec],
 }
 
 pub trait WitnessUnion: Sized {

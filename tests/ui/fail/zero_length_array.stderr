@@ -1,0 +1,5 @@
+error: zero-length byte arrays `[u8; 0]` are not supported for field `empty`; use `Vec<u8>` for variable-length bytes
+ --> tests/ui/fail/zero_length_array.rs:5:12
+  |
+5 |     empty: [u8; 0],
+  |            ^^^^^^^

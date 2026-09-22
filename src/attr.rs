@@ -25,6 +25,60 @@ pub struct FieldAttrs {
     pub is_union: bool,
 }
 
+/// Parse the required stable wire tag on a `CkbWitnessUnion` variant.
+///
+/// Union tags deliberately live on the enum variants rather than being inferred
+/// from declaration order: reordering source must not change a public wire ABI.
+pub fn parse_union_variant_tag(variant: &syn::Variant) -> syn::Result<u32> {
+    let mut tag = None;
+
+    for attr in &variant.attrs {
+        if !attr.path().is_ident("witness") {
+            continue;
+        }
+        let args: WitnessArgs = attr.parse_args_with(WitnessArgs::parse)?;
+        for item in args.0 {
+            if item.key != "tag" {
+                return Err(syn::Error::new(
+                    item.key_span,
+                    format!(
+                        "unrecognised union attribute key `{}`; supported key: tag",
+                        item.key
+                    ),
+                ));
+            }
+            let value = item.value.ok_or_else(|| {
+                syn::Error::new(item.key_span, "`tag` requires an unsigned integer value")
+            })?;
+            let Lit::Int(value) = value else {
+                return Err(syn::Error::new_spanned(
+                    value,
+                    "expected an unsigned integer literal for `tag`",
+                ));
+            };
+            let parsed = value.base10_parse::<u32>().map_err(|_| {
+                syn::Error::new_spanned(&value, "`tag` must fit in an unsigned 32-bit integer")
+            })?;
+            if tag.replace(parsed).is_some() {
+                return Err(syn::Error::new_spanned(
+                    &value,
+                    "duplicate `tag` attribute on union variant",
+                ));
+            }
+        }
+    }
+
+    tag.ok_or_else(|| {
+        syn::Error::new_spanned(
+            &variant.ident,
+            format!(
+                "variant `{}` is missing `#[witness(tag = N)]`; union tags must be explicit and stable",
+                variant.ident
+            ),
+        )
+    })
+}
+
 /// A single item inside `#[witness(...)]` — either `key = value` or a bare flag `key`.
 /// The key is stored as a plain `String` because `type` is a Rust keyword and
 /// `Ident::parse` (the default) rejects reserved words. `Ident::parse_any`
@@ -320,5 +374,23 @@ mod tests {
             msg.contains("supported keys are: required, description, type, union"),
             "unexpected error message: {msg}"
         );
+    }
+
+    #[test]
+    fn union_variant_tag_is_parsed() {
+        let variant: syn::Variant = parse_quote! {
+            #[witness(tag = 42)]
+            Multisig(Payload)
+        };
+        assert_eq!(parse_union_variant_tag(&variant).unwrap(), 42);
+    }
+
+    #[test]
+    fn union_variant_tag_is_required() {
+        let variant: syn::Variant = parse_quote! { Multisig(Payload) };
+        assert!(parse_union_variant_tag(&variant)
+            .unwrap_err()
+            .to_string()
+            .contains("missing `#[witness(tag = N)]`"));
     }
 }

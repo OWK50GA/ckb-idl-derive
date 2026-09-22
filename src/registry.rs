@@ -213,6 +213,15 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
                 }) = &type_array.len
                 && let Ok(size) = n.base10_parse::<usize>()
             {
+                if size == 0 {
+                    return Err(syn::Error::new_spanned(
+                        type_array,
+                        format!(
+                            "zero-length byte arrays `[u8; 0]` are not supported for field \
+                             `{field_name}`; use `Vec<u8>` for variable-length bytes"
+                        ),
+                    ));
+                }
                 return Ok(format!("bytes_fixed_{size}"));
             }
 
@@ -292,6 +301,7 @@ pub fn map_wire_kind(ty: &Type) -> Option<WireKind> {
                     lit: Lit::Int(n), ..
                 }) = &type_array.len
                 && let Ok(size) = n.base10_parse::<usize>()
+                && size > 0
             {
                 return Some(WireKind::FixedArray { size });
             }
@@ -381,6 +391,13 @@ mod tests {
     #[test]
     fn test_array_1_maps_to_bytes_fixed_1() {
         assert_eq!(map_type(&parse("[u8; 1]"), "f").unwrap(), "bytes_fixed_1");
+    }
+
+    #[test]
+    fn test_zero_length_array_is_rejected() {
+        let err = map_type(&parse("[u8; 0]"), "empty").unwrap_err();
+        assert!(err.to_string().contains("zero-length byte arrays"));
+        assert_eq!(map_wire_kind(&parse("[u8; 0]")), None);
     }
 
     #[test]

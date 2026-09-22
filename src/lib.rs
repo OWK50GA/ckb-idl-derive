@@ -87,17 +87,6 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
                 ));
             }
 
-            if matches!(&wire_kind, registry::WireKind::Optional(inner) if matches!(inner.as_ref(), registry::WireKind::VecOf(_))) {
-                return Err(syn::Error::new_spanned(
-                    &f.ty,
-                    format!(
-                        "field `{field_name}` is `Option<Vec<T>>` which is not supported; \
-                            optional nested structs have no safe wire boundary under the \
-                            trailing-exhaustion encoding — use `Option<Vec<u8>>` and decode manually"
-                    ),
-                ));
-            }
-
             // Option<Vec<T>> where T is not u8 is also not supported - the element
             // count prefix inside the optional makes the trailing-exhaustion boundary 
             // unreliable when followed by other fields.
@@ -314,8 +303,24 @@ fn impl_ckb_witness_union(input: TokenStream2) -> syn::Result<TokenStream2> {
     // Validate: must be an enum with single-field tuple variants.
     let data_enum = validate::check_enum_single_field_variants(&ast)?;
 
+    let tags = data_enum
+        .variants
+        .iter()
+        .map(attr::parse_union_variant_tag)
+        .collect::<syn::Result<Vec<_>>>()?;
+
+    for (index, tag) in tags.iter().enumerate() {
+        if tags[..index].contains(tag) {
+            let variant = &data_enum.variants[index];
+            return Err(syn::Error::new_spanned(
+                &variant.ident,
+                format!("union tag `{tag}` is already used by an earlier variant"),
+            ));
+        }
+    }
+
     // Emit the WitnessUnion trait impl.
-    Ok(codegen::emit_union_impl(&ast.ident, &data_enum.variants))
+    Ok(codegen::emit_union_impl(&ast.ident, &data_enum.variants, &tags))
 }
 
 
@@ -338,7 +343,7 @@ pub fn ckb_inner_witness(input: TokenStream) -> TokenStream {
     }
 }
 
-#[proc_macro_derive(CkbWitnessUnion)]
+#[proc_macro_derive(CkbWitnessUnion, attributes(witness))]
 pub fn ckb_witness_union(input: TokenStream) -> TokenStream {
     let input = TokenStream2::from(input);
     match impl_ckb_witness_union(input) {
@@ -420,5 +425,19 @@ mod tests {
                 "output does not contain &str: {ts_str}"
             );
         }
+    }
+
+    #[test]
+    fn duplicate_union_tags_are_rejected() {
+        let input: TokenStream2 = quote::quote! {
+            enum Authorization {
+                #[witness(tag = 7)]
+                First(FirstPayload),
+                #[witness(tag = 7)]
+                Second(SecondPayload),
+            }
+        };
+        let err = impl_ckb_witness_union(input).unwrap_err();
+        assert!(err.to_string().contains("union tag `7` is already used"));
     }
 }

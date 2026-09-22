@@ -146,13 +146,13 @@ pub fn emit_inner_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenS
 
 pub fn emit_union_impl(
     enum_name: &syn::Ident,
-    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+    tags: &[u32],
 ) -> TokenStream {
     let variant_specs: Vec<TokenStream> = variants
         .iter()
-        .enumerate()
-        .map(|(i, v)| {
-            let type_id = i as u32;
+        .zip(tags.iter())
+        .map(|(v, type_id)| {
             let variant_name_str = v.ident.to_string();
             // The inner type of the single-field tuple variant
             let inner_ty = match &v.fields {
@@ -163,7 +163,7 @@ pub fn emit_union_impl(
                 ::ckb_idl_types::UnionVariantSpec {
                     type_id: #type_id,
                     name: #variant_name_str,
-                    fields: <#inner_ty as ::ckb_idl_types::WitnessFields>::idl_fields(),
+                    fields: <#inner_ty as ::ckb_idl_types::WitnessFields>::idl_fields,
                 }
             }
         })
@@ -172,9 +172,8 @@ pub fn emit_union_impl(
     // Build one decode arm per variant
     let decode_arms: Vec<TokenStream> = variants
         .iter()
-        .enumerate()
-        .map(|(i, v)| {
-            let type_id = i as u32;
+        .zip(tags.iter())
+        .map(|(v, type_id)| {
             let variant_ident = &v.ident;
             let inner_ty = match &v.fields {
                 syn::Fields::Unnamed(f) => &f.unnamed[0].ty,
