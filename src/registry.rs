@@ -114,6 +114,51 @@ pub fn map_type(ty: &Type, field_name: &str) -> syn::Result<String> {
                     && args.args.len() == 1
                     && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
                 {
+                    // Reject element types that have no supported VecOf decoder arm.
+                    // Supported: scalars, [u8; N], named structs (WitnessFields).
+                    // Unsupported: Vec<Vec<T>>, Vec<Option<T>>, Vec<[non-u8; N]>.
+                    let reject = match inner_ty {
+                        // Vec<Vec<T>> — nested vectors are not supported.
+                        Type::Path(p) if p.path.segments.last()
+                            .map(|s| s.ident == "Vec")
+                            .unwrap_or(false) =>
+                        {
+                            Some("Vec<Vec<T>> is not supported as a field type; \
+                                  use a named struct with a Vec<u8> field instead")
+                        }
+                        // Vec<Option<T>> — optional elements are not supported.
+                        Type::Path(p) if p.path.segments.last()
+                            .map(|s| s.ident == "Option")
+                            .unwrap_or(false) =>
+                        {
+                            Some("Vec<Option<T>> is not supported as a field type; \
+                                  use a required inner type")
+                        }
+                        _ => None,
+                    };
+                    if let Some(msg) = reject {
+                        return Err(syn::Error::new_spanned(
+                            inner_ty,
+                            format!("unsupported element type for field `{field_name}`: {msg}"),
+                        ));
+                    }
+                    // Vec<T> where T is a named struct — rejected because we
+                    // cannot know at macro expansion time whether the inner struct
+                    // has optional trailing fields, making the element boundary
+                    // unsafe without a per-element length prefix.
+                    // Structs in Vec context would need a separate framing scheme.
+                    // Reject at map_type so the codegen never sees VecOf(Struct).
+                    let inner_kind = map_wire_kind(inner_ty);
+                    if matches!(inner_kind, Some(crate::registry::WireKind::Struct(_))) {
+                        return Err(syn::Error::new_spanned(
+                            inner_ty,
+                            format!(
+                                "unsupported element type for field `{field_name}`: \
+                                 Vec<NamedStruct> is not supported; nested structs in a Vec \
+                                 have no safe element boundary under the current wire format"
+                            ),
+                        ));
+                    }
                     let inner_idl = map_type(inner_ty, field_name)?;
                     return Ok(format!("vec_of_{inner_idl}"));
                 }

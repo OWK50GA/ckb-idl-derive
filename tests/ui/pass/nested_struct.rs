@@ -10,8 +10,8 @@ struct Authorization {
 
 #[derive(CkbWitness)]
 struct Witness {
-    authorization: Authorization,
     nonce: u16,
+    authorization: Authorization,
 }
 
 fn main() {}

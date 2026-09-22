@@ -346,7 +346,12 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                             ) as usize;
                             cursor += 4;
                             let mut __cur = cursor;
-                            let mut __vec = ::alloc::vec::Vec::with_capacity(__count);
+                            // Cap the initial allocation to the remaining buffer
+                            // length so a malformed count cannot cause an
+                            // oversized allocation before any bytes are read.
+                            let mut __vec = ::alloc::vec::Vec::with_capacity(
+                                __count.min(buf.len().saturating_sub(__cur))
+                            );
                             for __i in 0..__count {
                                 __vec.push(#elem_decode);
                             }

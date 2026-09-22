@@ -69,6 +69,17 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
                 ));
             }
 
+            if matches!(&wire_kind, registry::WireKind::Optional(inner) if matches!(inner.as_ref(), registry::WireKind::VecOf(_))) {
+                return Err(syn::Error::new_spanned(
+                    &f.ty,
+                    format!(
+                        "field `{field_name}` is `Option<Vec<T>>` which is not supported; \
+                            optional nested structs have no safe wire boundary under the \
+                            trailing-exhaustion encoding — use `Option<Vec<u8>>` and decode manually"
+                    ),
+                ));
+            }
+
             // Option<Vec<T>> where T is not u8 is also not supported - the element
             // count prefix inside the optional makes the trailing-exhaustion boundary 
             // unreliable when followed by other fields.
@@ -102,9 +113,29 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
     // the start of the next parent field. For simplicity we reject Struct fields
     // that appear before any optional field in the parent.
     let mut seen_optional = false;
+    let mut seen_struct: Option<&str> = None;
     for meta in &metas {
         let is_opt = matches!(meta.wire_kind, registry::WireKind::Optional(_));
         let is_struct = matches!(meta.wire_kind, registry::WireKind::Struct(_));
+
+        // Nothing may follow a struct field — it must be last.
+        if let Some(struct_name) = seen_struct {
+            let offending = fields_named
+                .named
+                .iter()
+                .find(|f| f.ident.as_ref().map(|i| i.to_string()).as_deref() == Some(&meta.name))
+                .expect("field must exist");
+            return Err(syn::Error::new_spanned(
+                &offending.ty,
+                format!(
+                    "field `{}` appears after nested struct field `{}`; \
+                     a nested struct field must be the last field in the struct \
+                     because its optional trailing fields use buffer exhaustion",
+                    meta.name, struct_name
+                ),
+            ));
+        }
+
         if is_opt {
             seen_optional = true;
         } else if seen_optional {
@@ -122,11 +153,7 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
                 ),
             ));
         }
-        // A nested struct field must come before any optional field in the
-        // parent. If it appears after an optional field the boundary is
-        // ambiguous; if it appears before one the inner struct's own optional
-        // trailing fields would consume parent bytes. Struct fields must come
-        // before all optional fields in the parent layout.
+
         if is_struct && seen_optional {
             let offending = fields_named
                 .named
@@ -141,6 +168,10 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
                     meta.name
                 ),
             ));
+        }
+
+        if is_struct {
+            seen_struct = Some(&meta.name);
         }
     }
 
