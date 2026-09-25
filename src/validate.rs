@@ -7,6 +7,10 @@ pub fn check_named_struct(input: &DeriveInput) -> syn::Result<&FieldsNamed> {
             "CkbWitness can only be derived for structs",
         )),
         Data::Struct(s) => match &s.fields {
+            Fields::Named(f) if f.named.is_empty() => Err(syn::Error::new_spanned(
+                input,
+                "CkbWitness requires at least one named field",
+            )),
             Fields::Named(f) => Ok(f),
             _ => Err(syn::Error::new_spanned(
                 input,

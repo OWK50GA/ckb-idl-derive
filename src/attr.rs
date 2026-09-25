@@ -25,6 +25,71 @@ pub struct FieldAttrs {
     pub is_union: bool,
 }
 
+pub fn idl_identifier(ident: &Ident) -> syn::Result<String> {
+    let name = ident.unraw().to_string();
+    let mut chars = name.chars();
+    let valid = chars
+        .next()
+        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric());
+    if !valid {
+        return Err(syn::Error::new_spanned(
+            ident,
+            "IDL identifiers must match `[A-Za-z_][A-Za-z0-9_]*`",
+        ));
+    }
+    Ok(name)
+}
+
+pub fn validate_semantic_type(
+    label: &str,
+    wire_type: &str,
+    span: proc_macro2::Span,
+) -> syn::Result<()> {
+    let expected = match label {
+        "secp256k1_sig" => Some("bytes_fixed_65"),
+        "secp256k1_pubkey" => Some("bytes_fixed_33"),
+        "schnorr_sig" => Some("bytes_fixed_64"),
+        "blake2b_hash" => Some("bytes_fixed_32"),
+        _ => None,
+    };
+    if let Some(expected) = expected {
+        if wire_type != expected {
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "semantic type `{label}` requires wire type `{expected}`, got `{wire_type}`"
+                ),
+            ));
+        }
+        return Ok(());
+    }
+
+    let Some((namespace, name)) = label.split_once(':') else {
+        return Err(syn::Error::new(
+            span,
+            "custom semantic types must use `project-name:type_name`",
+        ));
+    };
+    let namespace_ok = !namespace.is_empty()
+        && namespace.starts_with(|c: char| c.is_ascii_lowercase())
+        && namespace
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-');
+    let mut name_chars = name.chars();
+    let name_ok = name_chars
+        .next()
+        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+        && name_chars.all(|c| c == '_' || c == '.' || c == '-' || c.is_ascii_alphanumeric());
+    if !namespace_ok || !name_ok {
+        return Err(syn::Error::new(
+            span,
+            "custom semantic types must match `project-name:type_name`",
+        ));
+    }
+    Ok(())
+}
+
 /// Parse the required stable wire tag on a `CkbWitnessUnion` variant.
 ///
 /// Union tags deliberately live on the enum variants rather than being inferred
@@ -402,5 +467,22 @@ mod tests {
                 .to_string()
                 .contains("missing `#[witness(tag = N)]`")
         );
+    }
+
+    #[test]
+    fn ascii_identifier_rules_are_enforced() {
+        let valid: Ident = parse_quote! { field_1 };
+        let invalid: Ident = syn::parse_str("café").unwrap();
+        assert_eq!(idl_identifier(&valid).unwrap(), "field_1");
+        assert!(idl_identifier(&invalid).is_err());
+    }
+
+    #[test]
+    fn semantic_types_require_correct_wire_or_namespace() {
+        let span = proc_macro2::Span::call_site();
+        assert!(validate_semantic_type("secp256k1_sig", "bytes_fixed_65", span).is_ok());
+        assert!(validate_semantic_type("secp256k1_sig", "bytes_fixed_64", span).is_err());
+        assert!(validate_semantic_type("my-project:proof", "bytes_fixed_32", span).is_ok());
+        assert!(validate_semantic_type("my_custom_proof", "bytes_fixed_32", span).is_err());
     }
 }

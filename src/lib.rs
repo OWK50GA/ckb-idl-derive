@@ -19,11 +19,8 @@ fn collect_field_metas(fields_named: &syn::FieldsNamed) -> syn::Result<Vec<Field
         .named
         .iter()
         .map(|field| {
-            let field_name = field
-                .ident
-                .as_ref()
-                .expect("named field has no ident")
-                .to_string();
+            let field_ident = field.ident.as_ref().expect("named field has no ident");
+            let field_name = attr::idl_identifier(field_ident)?;
             let attrs = attr::parse_field_attrs(field)?;
             let idl_type = registry::map_type(&field.ty, &field_name)?;
             let wire_kind = registry::map_wire_kind(&field.ty)
@@ -45,6 +42,18 @@ fn collect_field_metas(fields_named: &syn::FieldsNamed) -> syn::Result<Vec<Field
             } else {
                 wire_kind
             };
+
+            if attrs.is_union && attrs.type_override.is_some() {
+                return Err(syn::Error::new_spanned(
+                    &field.ty,
+                    format!(
+                        "field `{field_name}` cannot combine `#[witness(union)]` with a semantic type override"
+                    ),
+                ));
+            }
+            if let Some(label) = &attrs.type_override {
+                attr::validate_semantic_type(label, &idl_type, field_ident.span())?;
+            }
 
             let is_optional_type = matches!(&wire_kind, registry::WireKind::Optional(_));
             if is_optional_type && attrs.required {
@@ -86,8 +95,8 @@ fn collect_field_metas(fields_named: &syn::FieldsNamed) -> syn::Result<Vec<Field
             }
 
             Ok(FieldMeta {
+                ident: field_ident.clone(),
                 name: field_name,
-                idl_type,
                 required: attrs.required,
                 description: attrs.description,
                 type_override: attrs.type_override,
@@ -157,18 +166,25 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
     // 2. Parse and validate the shared field layout.
     let metas = collect_field_metas(fields_named)?;
 
-    let idl = codegen::build_idl(&metas);
-    let json =
-        serde_json::to_string(&idl).expect("serde_json serialisation is infallible for this value");
-
-    // 4. Write idl.json to OUT_DIR.
-    let path = io::write_idl(&json)?;
-
-    // 5. Emit the path constant + from_witness_args impl.
-    let const_ts = codegen::emit_const(&path);
     let impl_ts = codegen::emit_impl(&ast.ident, &metas);
+    let recursive = metas.iter().any(|meta| {
+        matches!(
+            meta.wire_kind,
+            registry::WireKind::Struct(_) | registry::WireKind::Union(_)
+        )
+    });
+    if recursive {
+        // The proc macro cannot inspect separately declared nested types.
+        // `ckb-idl-export` is the authoritative artifact producer here.
+        io::remove_stale_idl()?;
+        return Ok(impl_ts);
+    }
 
-    let mut out = const_ts;
+    let idl = codegen::build_idl(&metas);
+    let json = serde_json_canonicalizer::to_string(&idl)
+        .expect("canonical JSON serialisation is infallible for this value");
+    let path = io::write_idl(&json)?;
+    let mut out = codegen::emit_const(&path);
     out.extend(impl_ts);
     Ok(out)
 }
@@ -198,6 +214,10 @@ fn impl_ckb_witness_union(input: TokenStream2) -> syn::Result<TokenStream2> {
         .iter()
         .map(attr::parse_union_variant_tag)
         .collect::<syn::Result<Vec<_>>>()?;
+
+    for variant in &data_enum.variants {
+        attr::idl_identifier(&variant.ident)?;
+    }
 
     for (index, tag) in tags.iter().enumerate() {
         if tags[..index].contains(tag) {

@@ -9,9 +9,10 @@ use crate::registry::WireKind;
 /// Intermediate representation for a single witness field.
 #[derive(Debug)]
 pub struct FieldMeta {
+    /// Original Rust identifier used by generated bindings. This may be a raw
+    /// identifier even though `name` contains its unraw IDL representation.
+    pub ident: syn::Ident,
     pub name: String,
-    /// Structural IDL type derived from the Rust type (e.g. `"bytes_fixed_65"`, `"uint64"`).
-    pub idl_type: String,
     pub required: bool,
     pub description: Option<String>,
     /// Optional semantic label supplied via `#[witness(type = "...")]`.
@@ -33,12 +34,12 @@ pub struct FieldMeta {
 /// Produces:
 /// ```json
 /// {
-///   "idl_version": "0.1",
-///   "encoding": {
-///     "variable_length_prefix": { "width": 4, "endian": "little" },
-///     "optional_fields": "trailing_exhaustion"
-///   },
-///   "witness": [ { "name": "...", "type": "...", "required": true/false }, ... ]
+///   "idl_version": "0.1.0",
+///   "interfaces": [{
+///     "id": "lock_witness", "kind": "witness_args.lock",
+///     "encoding": { "id": "ckb-idl-linear-0.1.0" },
+///     "fields": [ { "name": "...", "type": "...", "required": true/false } ]
+///   }]
 /// }
 /// ```
 /// The `"description"` key is included only when `Some`.
@@ -47,18 +48,19 @@ pub fn build_idl(fields: &[FieldMeta]) -> Value {
     let array: Vec<Value> = fields
         .iter()
         .map(|f| {
-            let type_str = f.type_override.as_deref().unwrap_or(f.idl_type.as_str());
-            // Union fields get "type": "union" regardless of any override.
-            let effective_type = if matches!(&f.wire_kind, WireKind::Union(_)) {
-                "union"
-            } else {
-                type_str
-            };
+            let structural_type = wire_type_name(&f.wire_kind);
+            let effective_type = f.type_override.as_deref().unwrap_or(&structural_type);
             let mut obj = json!({
                 "name": f.name,
                 "type": effective_type,
                 "required": f.required,
             });
+            if f.type_override.is_some() {
+                obj["wire_type"] = json!(structural_type);
+            }
+            if let WireKind::VecOf(inner) = &f.wire_kind {
+                obj["items"] = json!({ "type": wire_type_name(inner) });
+            }
             if let Some(desc) = &f.description {
                 obj["description"] = json!(desc);
             }
@@ -67,13 +69,26 @@ pub fn build_idl(fields: &[FieldMeta]) -> Value {
         .collect();
 
     json!({
-        "idl_version": "0.1",
-        "encoding": {
-            "variable_length_prefix": { "width": 4, "endian": "little" },
-            "optional_fields": "trailing_exhaustion"
-        },
-        "witness": array
+        "idl_version": "0.1.0",
+        "interfaces": [{
+            "id": "lock_witness",
+            "kind": "witness_args.lock",
+            "encoding": { "id": "ckb-idl-linear-0.1.0" },
+            "fields": array
+        }]
     })
+}
+
+fn wire_type_name(kind: &WireKind) -> String {
+    match kind {
+        WireKind::FixedScalar { size } => format!("uint{}", size * 8),
+        WireKind::FixedArray { size } => format!("bytes_fixed_{size}"),
+        WireKind::VarBytes => "bytes".into(),
+        WireKind::Optional(inner) => wire_type_name(inner),
+        WireKind::Struct(_) => "struct".into(),
+        WireKind::VecOf(_) => "vector".into(),
+        WireKind::Union(_) => "union".into(),
+    }
 }
 
 /// Emit a `pub const _CKB_WITNESS_IDL_PATH: &str = "<path>";` token stream.
@@ -231,14 +246,15 @@ fn emit_type_provider(name: &syn::Ident, wire_kind: &WireKind) -> TokenStream {
 pub fn emit_inner_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream {
     let decode_stmts = emit_decode_stmts(fields);
 
-    let field_idents: Vec<_> = fields.iter().map(|f| format_ident!("{}", f.name)).collect();
+    let field_idents: Vec<_> = fields.iter().map(|f| &f.ident).collect();
 
     // Build the static FieldSpec slice entries.
     let field_specs: Vec<TokenStream> = fields
         .iter()
         .map(|f| {
             let name_str = &f.name;
-            let type_str = f.type_override.as_deref().unwrap_or(f.idl_type.as_str());
+            let structural_type = wire_type_name(&f.wire_kind);
+            let type_str = f.type_override.as_deref().unwrap_or(&structural_type);
             let required = f.required;
             let desc = match &f.description {
                 Some(d) => quote! { ::core::option::Option::Some(#d) },
@@ -367,7 +383,8 @@ pub fn emit_union_impl(
                 buf: &[u8],
                 cursor: &mut usize,
             ) -> ::core::result::Result<Self, ::ckb_idl_types::WitnessError> {
-                if *cursor + 4 > buf.len() {
+                let __tag_end = ::ckb_idl_types::checked_end(*cursor, 4, #enum_name_str)?;
+                if __tag_end > buf.len() {
                     return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                         field: #enum_name_str,
                         expected: 4,
@@ -375,9 +392,9 @@ pub fn emit_union_impl(
                     });
                 }
                 let __type_id = u32::from_le_bytes(
-                    buf[*cursor..*cursor + 4].try_into().unwrap()
+                    buf[*cursor..__tag_end].try_into().unwrap()
                 );
-                *cursor += 4;
+                *cursor = __tag_end;
                 match __type_id {
                     #(#decode_arms)*
                     _ => Err(::ckb_idl_types::WitnessError::UnknownUnionTypeId {
@@ -397,13 +414,14 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
     fields
         .iter()
         .map(|f| {
-            let ident = format_ident!("{}", f.name);
+            let ident = &f.ident;
             let name_str = &f.name;
 
             match &f.wire_kind {
                 WireKind::FixedScalar { size: 1 } => quote! {
                     let #ident: u8 = {
-                        if cursor + 1 > buf.len() {
+                        let __end = ::ckb_idl_types::checked_end(cursor, 1, #name_str)?;
+                        if __end > buf.len() {
                             return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                 field: #name_str,
                                 expected: 1,
@@ -411,67 +429,71 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                             });
                         }
                         let v = buf[cursor];
-                        cursor += 1;
+                        cursor = __end;
                         v
                     };
                 },
 
                 WireKind::FixedScalar { size: 2 } => quote! {
                     let #ident: u16 = {
-                        if cursor + 2 > buf.len() {
+                        let __end = ::ckb_idl_types::checked_end(cursor, 2, #name_str)?;
+                        if __end > buf.len() {
                             return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                 field: #name_str,
                                 expected: 2,
                                 got: buf.len().saturating_sub(cursor),
                             });
                         }
-                        let v = u16::from_le_bytes(buf[cursor..cursor + 2].try_into().unwrap());
-                        cursor += 2;
+                        let v = u16::from_le_bytes(buf[cursor..__end].try_into().unwrap());
+                        cursor = __end;
                         v
                     };
                 },
 
                 WireKind::FixedScalar { size: 4 } => quote! {
                     let #ident: u32 = {
-                        if cursor + 4 > buf.len() {
+                        let __end = ::ckb_idl_types::checked_end(cursor, 4, #name_str)?;
+                        if __end > buf.len() {
                             return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                 field: #name_str,
                                 expected: 4,
                                 got: buf.len().saturating_sub(cursor),
                             });
                         }
-                        let v = u32::from_le_bytes(buf[cursor..cursor + 4].try_into().unwrap());
-                        cursor += 4;
+                        let v = u32::from_le_bytes(buf[cursor..__end].try_into().unwrap());
+                        cursor = __end;
                         v
                     };
                 },
 
                 WireKind::FixedScalar { size: 8 } => quote! {
                     let #ident: u64 = {
-                        if cursor + 8 > buf.len() {
+                        let __end = ::ckb_idl_types::checked_end(cursor, 8, #name_str)?;
+                        if __end > buf.len() {
                             return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                 field: #name_str,
                                 expected: 8,
                                 got: buf.len().saturating_sub(cursor),
                             });
                         }
-                        let v = u64::from_le_bytes(buf[cursor..cursor + 8].try_into().unwrap());
-                        cursor += 8;
+                        let v = u64::from_le_bytes(buf[cursor..__end].try_into().unwrap());
+                        cursor = __end;
                         v
                     };
                 },
 
                 WireKind::FixedScalar { size: 16 } => quote! {
                     let #ident: u128 = {
-                        if cursor + 16 > buf.len() {
+                        let __end = ::ckb_idl_types::checked_end(cursor, 16, #name_str)?;
+                        if __end > buf.len() {
                             return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                 field: #name_str,
                                 expected: 16,
                                 got: buf.len().saturating_sub(cursor),
                             });
                         }
-                        let v = u128::from_le_bytes(buf[cursor..cursor + 16].try_into().unwrap());
-                        cursor += 16;
+                        let v = u128::from_le_bytes(buf[cursor..__end].try_into().unwrap());
+                        cursor = __end;
                         v
                     };
                 },
@@ -483,7 +505,8 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
 
                 WireKind::FixedArray { size } => quote! {
                     let #ident: [u8; #size] = {
-                        if cursor + #size > buf.len() {
+                        let __end = ::ckb_idl_types::checked_end(cursor, #size, #name_str)?;
+                        if __end > buf.len() {
                             return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                 field: #name_str,
                                 expected: #size,
@@ -491,15 +514,16 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                             });
                         }
                         let mut arr = [0u8; #size];
-                        arr.copy_from_slice(&buf[cursor..cursor + #size]);
-                        cursor += #size;
+                        arr.copy_from_slice(&buf[cursor..__end]);
+                        cursor = __end;
                         arr
                     };
                 },
 
                 WireKind::VarBytes => quote! {
                     let #ident: ::alloc::vec::Vec<u8> = {
-                        if cursor + 4 > buf.len() {
+                        let __prefix_end = ::ckb_idl_types::checked_end(cursor, 4, #name_str)?;
+                        if __prefix_end > buf.len() {
                             return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                 field: #name_str,
                                 expected: 4,
@@ -507,18 +531,19 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                             });
                         }
                         let len = u32::from_le_bytes(
-                            buf[cursor..cursor + 4].try_into().unwrap()
+                            buf[cursor..__prefix_end].try_into().unwrap()
                         ) as usize;
-                        cursor += 4;
-                        if cursor + len > buf.len() {
+                        cursor = __prefix_end;
+                        let __payload_end = ::ckb_idl_types::checked_end(cursor, len, #name_str)?;
+                        if __payload_end > buf.len() {
                             return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                 field: #name_str,
                                 expected: len,
                                 got: buf.len().saturating_sub(cursor),
                             });
                         }
-                        let v = buf[cursor..cursor + len].to_vec();
-                        cursor += len;
+                        let v = buf[cursor..__payload_end].to_vec();
+                        cursor = __payload_end;
                         v
                     };
                 },
@@ -529,54 +554,60 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                     // returns it, then call it in a loop
                     let elem_decode = match inner.as_ref() {
                         WireKind::FixedScalar { size: 1 } => quote! {{
-                            if __cur + 1 > buf.len() {
+                            let __end = ::ckb_idl_types::checked_end(__cur, 1, #name_str)?;
+                            if __end > buf.len() {
                                 return Err(::ckb_idl_types::WitnessError::VecElementsTooShort {
                                     field: #name_str, element_index: __i,
                                 });
                             }
-                            let v = buf[__cur]; __cur += 1; v
+                            let v = buf[__cur]; __cur = __end; v
                         }},
                         WireKind::FixedScalar { size: 2 } => quote! {{
-                            if __cur + 2 > buf.len() {
+                            let __end = ::ckb_idl_types::checked_end(__cur, 2, #name_str)?;
+                            if __end > buf.len() {
                                 return Err(::ckb_idl_types::WitnessError::VecElementsTooShort {
                                     field: #name_str, element_index: __i,
                                 });
                             }
-                            let v = u16::from_le_bytes(buf[__cur..__cur+2].try_into().unwrap()); __cur += 2; v
+                            let v = u16::from_le_bytes(buf[__cur..__end].try_into().unwrap()); __cur = __end; v
                         }},
                         WireKind::FixedScalar { size: 4 } => quote! {{
-                            if __cur + 4 > buf.len() {
+                            let __end = ::ckb_idl_types::checked_end(__cur, 4, #name_str)?;
+                            if __end > buf.len() {
                                 return Err(::ckb_idl_types::WitnessError::VecElementsTooShort {
                                     field: #name_str, element_index: __i,
                                 });
                             }
-                            let v = u32::from_le_bytes(buf[__cur..__cur+4].try_into().unwrap()); __cur += 4; v
+                            let v = u32::from_le_bytes(buf[__cur..__end].try_into().unwrap()); __cur = __end; v
                         }},
                         WireKind::FixedScalar { size: 8 } => quote! {{
-                            if __cur + 8 > buf.len() {
+                            let __end = ::ckb_idl_types::checked_end(__cur, 8, #name_str)?;
+                            if __end > buf.len() {
                                 return Err(::ckb_idl_types::WitnessError::VecElementsTooShort {
                                     field: #name_str, element_index: __i,
                                 });
                             }
-                            let v = u64::from_le_bytes(buf[__cur..__cur+8].try_into().unwrap()); __cur += 8; v
+                            let v = u64::from_le_bytes(buf[__cur..__end].try_into().unwrap()); __cur = __end; v
                         }},
                         WireKind::FixedScalar { size: 16 } => quote! {{
-                            if __cur + 16 > buf.len() {
+                            let __end = ::ckb_idl_types::checked_end(__cur, 16, #name_str)?;
+                            if __end > buf.len() {
                                 return Err(::ckb_idl_types::WitnessError::VecElementsTooShort {
                                     field: #name_str, element_index: __i,
                                 });
                             }
-                            let v = u128::from_le_bytes(buf[__cur..__cur+16].try_into().unwrap()); __cur += 16; v
+                            let v = u128::from_le_bytes(buf[__cur..__end].try_into().unwrap()); __cur = __end; v
                         }},
                         WireKind::FixedArray { size } => quote! {{
-                            if __cur + #size > buf.len() {
+                            let __end = ::ckb_idl_types::checked_end(__cur, #size, #name_str)?;
+                            if __end > buf.len() {
                                 return Err(::ckb_idl_types::WitnessError::VecElementsTooShort {
                                     field: #name_str, element_index: __i,
                                 });
                             }
                             let mut arr = [0u8; #size];
-                            arr.copy_from_slice(&buf[__cur..__cur + #size]);
-                            __cur += #size;
+                            arr.copy_from_slice(&buf[__cur..__end]);
+                            __cur = __end;
                             arr
                         }},
                         WireKind::Struct(type_path) => quote! {
@@ -586,7 +617,8 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                     };
                     quote! {
                         let #ident = {
-                            if cursor + 4 > buf.len() {
+                            let __prefix_end = ::ckb_idl_types::checked_end(cursor, 4, #name_str)?;
+                            if __prefix_end > buf.len() {
                                 return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                     field: #name_str,
                                     expected: 4,
@@ -594,9 +626,15 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                                 });
                             }
                             let __count = u32::from_le_bytes(
-                                buf[cursor..cursor + 4].try_into().unwrap()
+                                buf[cursor..__prefix_end].try_into().unwrap()
                             ) as usize;
-                            cursor += 4;
+                            cursor = __prefix_end;
+                            if __count == 0 {
+                                return Err(::ckb_idl_types::WitnessError::InvalidVectorCount {
+                                    field: #name_str,
+                                    count: 0,
+                                });
+                            }
                             let mut __cur = cursor;
                             // Cap the initial allocation to the remaining buffer
                             // length so a malformed count cannot cause an
@@ -619,7 +657,8 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                             if cursor >= buf.len() {
                                 ::core::option::Option::None
                             } else {
-                                if cursor + 4 > buf.len() {
+                                let __prefix_end = ::ckb_idl_types::checked_end(cursor, 4, #name_str)?;
+                                if __prefix_end > buf.len() {
                                     return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                         field: #name_str,
                                         expected: 4,
@@ -627,18 +666,19 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                                     });
                                 }
                                 let len = u32::from_le_bytes(
-                                    buf[cursor..cursor + 4].try_into().unwrap()
+                                    buf[cursor..__prefix_end].try_into().unwrap()
                                 ) as usize;
-                                cursor += 4;
-                                if cursor + len > buf.len() {
+                                cursor = __prefix_end;
+                                let __payload_end = ::ckb_idl_types::checked_end(cursor, len, #name_str)?;
+                                if __payload_end > buf.len() {
                                     return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                         field: #name_str,
                                         expected: len,
                                         got: buf.len().saturating_sub(cursor),
                                     });
                                 }
-                                let v = buf[cursor..cursor + len].to_vec();
-                                cursor += len;
+                                let v = buf[cursor..__payload_end].to_vec();
+                                cursor = __payload_end;
                                 ::core::option::Option::Some(v)
                             }
                         };
@@ -648,7 +688,8 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                             if cursor >= buf.len() {
                                 ::core::option::Option::None
                             } else {
-                                if cursor + #size > buf.len() {
+                                let __end = ::ckb_idl_types::checked_end(cursor, #size, #name_str)?;
+                                if __end > buf.len() {
                                     return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                         field: #name_str,
                                         expected: #size,
@@ -656,8 +697,8 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                                     });
                                 }
                                 let mut arr = [0u8; #size];
-                                arr.copy_from_slice(&buf[cursor..cursor + #size]);
-                                cursor += #size;
+                                arr.copy_from_slice(&buf[cursor..__end]);
+                                cursor = __end;
                                 ::core::option::Option::Some(arr)
                             }
                         };
@@ -665,22 +706,26 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                     WireKind::FixedScalar { size: 1 } => quote! {
                         let #ident: ::core::option::Option<u8> = {
                             if cursor >= buf.len() { ::core::option::Option::None }
-                            else { cursor += 1; ::core::option::Option::Some(buf[cursor - 1]) }
+                            else {
+                                let __end = ::ckb_idl_types::checked_end(cursor, 1, #name_str)?;
+                                let value = buf[cursor]; cursor = __end;
+                                ::core::option::Option::Some(value)
+                            }
                         };
                     },
                     WireKind::FixedScalar { size: 2 } => quote! {
                         let #ident: ::core::option::Option<u16> = {
                             if cursor >= buf.len() {
                                 ::core::option::Option::None
-                            } else if cursor + 2 > buf.len() {
+                            } else if ::ckb_idl_types::checked_end(cursor, 2, #name_str)? > buf.len() {
                                 return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                     field: #name_str,
                                     expected: 2,
                                     got: buf.len().saturating_sub(cursor),
                                 });
                             } else {
-                                let v = u16::from_le_bytes(buf[cursor..cursor+2].try_into().unwrap());
-                                cursor += 2;
+                                let v = u16::from_le_bytes(buf[cursor..::ckb_idl_types::checked_end(cursor, 2, #name_str)?].try_into().unwrap());
+                                cursor = ::ckb_idl_types::checked_end(cursor, 2, #name_str)?;
                                 ::core::option::Option::Some(v)
                             }
                         };
@@ -689,15 +734,15 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                         let #ident: ::core::option::Option<u32> = {
                             if cursor >= buf.len() {
                                 ::core::option::Option::None
-                            } else if cursor + 4 > buf.len() {
+                            } else if ::ckb_idl_types::checked_end(cursor, 4, #name_str)? > buf.len() {
                                 return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                     field: #name_str,
                                     expected: 4,
                                     got: buf.len().saturating_sub(cursor),
                                 });
                             } else {
-                                let v = u32::from_le_bytes(buf[cursor..cursor+4].try_into().unwrap());
-                                cursor += 4;
+                                let v = u32::from_le_bytes(buf[cursor..::ckb_idl_types::checked_end(cursor, 4, #name_str)?].try_into().unwrap());
+                                cursor = ::ckb_idl_types::checked_end(cursor, 4, #name_str)?;
                                 ::core::option::Option::Some(v)
                             }
                         };
@@ -706,15 +751,15 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                         let #ident: ::core::option::Option<u64> = {
                             if cursor >= buf.len() {
                                 ::core::option::Option::None
-                            } else if cursor + 8 > buf.len() {
+                            } else if ::ckb_idl_types::checked_end(cursor, 8, #name_str)? > buf.len() {
                                 return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                     field: #name_str,
                                     expected: 8,
                                     got: buf.len().saturating_sub(cursor),
                                 });
                             } else {
-                                let v = u64::from_le_bytes(buf[cursor..cursor+8].try_into().unwrap());
-                                cursor += 8;
+                                let v = u64::from_le_bytes(buf[cursor..::ckb_idl_types::checked_end(cursor, 8, #name_str)?].try_into().unwrap());
+                                cursor = ::ckb_idl_types::checked_end(cursor, 8, #name_str)?;
                                 ::core::option::Option::Some(v)
                             }
                         };
@@ -723,15 +768,15 @@ fn emit_decode_stmts(fields: &[FieldMeta]) -> Vec<TokenStream> {
                         let #ident: ::core::option::Option<u128> = {
                             if cursor >= buf.len() {
                                 ::core::option::Option::None
-                            } else if cursor + 16 > buf.len() {
+                            } else if ::ckb_idl_types::checked_end(cursor, 16, #name_str)? > buf.len() {
                                 return Err(::ckb_idl_types::WitnessError::FieldTooShort {
                                     field: #name_str,
                                     expected: 16,
                                     got: buf.len().saturating_sub(cursor),
                                 });
                             } else {
-                                let v = u128::from_le_bytes(buf[cursor..cursor+16].try_into().unwrap());
-                                cursor += 16;
+                                let v = u128::from_le_bytes(buf[cursor..::ckb_idl_types::checked_end(cursor, 16, #name_str)?].try_into().unwrap());
+                                cursor = ::ckb_idl_types::checked_end(cursor, 16, #name_str)?;
                                 ::core::option::Option::Some(v)
                             }
                         };
@@ -765,7 +810,7 @@ pub fn emit_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenStream 
     let schema_support = emit_schema_support(struct_name, fields);
 
     // Identifiers for the struct construction expression.
-    let field_idents: Vec<_> = fields.iter().map(|f| format_ident!("{}", f.name)).collect();
+    let field_idents: Vec<_> = fields.iter().map(|f| &f.ident).collect();
 
     quote! {
         #schema_support
@@ -819,14 +864,14 @@ mod tests {
 
     fn make_field(
         name: &str,
-        idl_type: &str,
+        _idl_type: &str,
         required: bool,
         description: Option<&str>,
         wire_kind: WireKind,
     ) -> FieldMeta {
         FieldMeta {
+            ident: format_ident!("{name}"),
             name: name.to_string(),
-            idl_type: idl_type.to_string(),
             required,
             description: description.map(|s| s.to_string()),
             type_override: None,
@@ -836,13 +881,13 @@ mod tests {
 
     fn make_field_with_override(
         name: &str,
-        idl_type: &str,
+        _idl_type: &str,
         type_override: &str,
         wire_kind: WireKind,
     ) -> FieldMeta {
         FieldMeta {
+            ident: format_ident!("{name}"),
             name: name.to_string(),
-            idl_type: idl_type.to_string(),
             required: true,
             description: None,
             type_override: Some(type_override.to_string()),
@@ -861,33 +906,21 @@ mod tests {
             None,
             WireKind::FixedArray { size: 65 },
         )]);
-        assert!(idl["witness"].is_array());
+        assert!(idl["interfaces"][0]["fields"].is_array());
     }
 
     #[test]
     fn top_level_idl_version_is_point_one() {
         let idl = build_idl(&[]);
-        assert_eq!(idl["idl_version"].as_str().unwrap(), "0.1");
+        assert_eq!(idl["idl_version"].as_str().unwrap(), "0.1.0");
     }
 
     #[test]
     fn top_level_encoding_block_is_present() {
         let idl = build_idl(&[]);
         assert_eq!(
-            idl["encoding"]["variable_length_prefix"]["width"]
-                .as_u64()
-                .unwrap(),
-            4
-        );
-        assert_eq!(
-            idl["encoding"]["variable_length_prefix"]["endian"]
-                .as_str()
-                .unwrap(),
-            "little"
-        );
-        assert_eq!(
-            idl["encoding"]["optional_fields"].as_str().unwrap(),
-            "trailing_exhaustion"
+            idl["interfaces"][0]["encoding"]["id"],
+            "ckb-idl-linear-0.1.0"
         );
     }
 
@@ -904,7 +937,13 @@ mod tests {
             ),
             make_field("c", "bytes", true, Some("blob"), WireKind::VarBytes),
         ];
-        assert_eq!(build_idl(&fields)["witness"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            build_idl(&fields)["interfaces"][0]["fields"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
     }
 
     #[test]
@@ -925,7 +964,10 @@ mod tests {
                 WireKind::FixedScalar { size: 8 },
             ),
         ];
-        let arr = build_idl(&fields)["witness"].as_array().unwrap().clone();
+        let arr = build_idl(&fields)["interfaces"][0]["fields"]
+            .as_array()
+            .unwrap()
+            .clone();
         assert_eq!(arr[0]["name"], "first");
         assert_eq!(arr[1]["name"], "second");
     }
@@ -939,7 +981,11 @@ mod tests {
             None,
             WireKind::FixedScalar { size: 1 },
         )]);
-        assert!(idl["witness"][0].get("description").is_none());
+        assert!(
+            idl["interfaces"][0]["fields"][0]
+                .get("description")
+                .is_none()
+        );
     }
 
     #[test]
@@ -951,12 +997,32 @@ mod tests {
             Some("my desc"),
             WireKind::FixedScalar { size: 1 },
         )]);
-        assert_eq!(idl["witness"][0]["description"], "my desc");
+        assert_eq!(idl["interfaces"][0]["fields"][0]["description"], "my desc");
     }
 
     #[test]
     fn empty_fields_produces_empty_array() {
-        assert_eq!(build_idl(&[])["witness"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            build_idl(&[])["interfaces"][0]["fields"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn typed_vector_uses_structured_items() {
+        let idl = build_idl(&[make_field(
+            "values",
+            "vec_of_uint64",
+            true,
+            None,
+            WireKind::VecOf(Box::new(WireKind::FixedScalar { size: 8 })),
+        )]);
+        let field = &idl["interfaces"][0]["fields"][0];
+        assert_eq!(field["type"], "vector");
+        assert_eq!(field["items"]["type"], "uint64");
     }
 
     // ── type_override tests ───────────────────────────────────────────────────
@@ -970,7 +1036,11 @@ mod tests {
             WireKind::FixedArray { size: 65 },
         )]);
         // IDL should show the semantic label, not the structural default.
-        assert_eq!(idl["witness"][0]["type"], "secp256k1_sig");
+        assert_eq!(idl["interfaces"][0]["fields"][0]["type"], "secp256k1_sig");
+        assert_eq!(
+            idl["interfaces"][0]["fields"][0]["wire_type"],
+            "bytes_fixed_65"
+        );
     }
 
     #[test]
@@ -982,7 +1052,7 @@ mod tests {
             None,
             WireKind::FixedArray { size: 65 },
         )]);
-        assert_eq!(idl["witness"][0]["type"], "bytes_fixed_65");
+        assert_eq!(idl["interfaces"][0]["fields"][0]["type"], "bytes_fixed_65");
     }
 
     #[test]
@@ -990,10 +1060,13 @@ mod tests {
         let idl = build_idl(&[make_field_with_override(
             "proof",
             "bytes_fixed_32",
-            "my_custom_proof",
+            "my-project:custom_proof",
             WireKind::FixedArray { size: 32 },
         )]);
-        assert_eq!(idl["witness"][0]["type"], "my_custom_proof");
+        assert_eq!(
+            idl["interfaces"][0]["fields"][0]["type"],
+            "my-project:custom_proof"
+        );
     }
 
     #[test]
@@ -1009,13 +1082,16 @@ mod tests {
             make_field_with_override(
                 "b",
                 "bytes_fixed_64",
-                "bls12_381_half",
+                "my-project:bls12_381_half",
                 WireKind::FixedArray { size: 64 },
             ),
         ];
         let idl = build_idl(&fields);
-        assert_eq!(idl["witness"][0]["type"], "schnorr_sig");
-        assert_eq!(idl["witness"][1]["type"], "bls12_381_half");
+        assert_eq!(idl["interfaces"][0]["fields"][0]["type"], "schnorr_sig");
+        assert_eq!(
+            idl["interfaces"][0]["fields"][1]["type"],
+            "my-project:bls12_381_half"
+        );
         // wire_kind is unchanged — both would decode 64 bytes identically.
     }
 
@@ -1050,16 +1126,19 @@ mod tests {
 
     fn arb_field_meta() -> impl Strategy<Value = FieldMeta> {
         (
-            "[a-z][a-z0-9_]{0,15}",
+            "[a-z][a-z0-9_]{0,15}".prop_filter(
+                "field names must also be valid non-keyword Rust identifiers",
+                |name| syn::parse_str::<syn::Ident>(name).is_ok(),
+            ),
             arb_idl_type(),
             any::<bool>(),
             proptest::option::of("[^\x00]{1,64}"),
-            proptest::option::of("[a-z][a-z0-9_]{0,20}"),
+            proptest::option::of("[a-z][a-z0-9-]{0,8}:[a-z][a-z0-9_]{0,12}"),
         )
             .prop_map(
-                |(name, (idl_type, wire_kind), required, description, type_override)| FieldMeta {
+                |(name, (_idl_type, wire_kind), required, description, type_override)| FieldMeta {
+                    ident: syn::parse_str(&name).expect("generated field name must be valid"),
                     name,
-                    idl_type,
                     required,
                     description,
                     type_override,
@@ -1077,13 +1156,11 @@ mod tests {
             let idl = build_idl(&fields);
 
             // Top-level shape
-            prop_assert_eq!(idl["idl_version"].as_str().unwrap(), "0.1");
-            prop_assert_eq!(idl["encoding"]["variable_length_prefix"]["width"].as_u64().unwrap(), 4);
-            prop_assert_eq!(idl["encoding"]["variable_length_prefix"]["endian"].as_str().unwrap(), "little");
-            prop_assert_eq!(idl["encoding"]["optional_fields"].as_str().unwrap(), "trailing_exhaustion");
+            prop_assert_eq!(idl["idl_version"].as_str().unwrap(), "0.1.0");
+            prop_assert_eq!(idl["interfaces"][0]["encoding"]["id"].as_str().unwrap(), "ckb-idl-linear-0.1.0");
 
-            let arr = idl["witness"].as_array()
-                .expect("\"witness\" must be a JSON array");
+            let arr = idl["interfaces"][0]["fields"].as_array()
+                .expect("interface fields must be a JSON array");
 
             prop_assert_eq!(arr.len(), n);
 
@@ -1094,8 +1171,8 @@ mod tests {
                 prop_assert_eq!(elem["name"].as_str().unwrap(), field.name.as_str());
 
                 // type must be the override when present, structural otherwise
-                let expected_type = field.type_override.as_deref()
-                    .unwrap_or(field.idl_type.as_str());
+                let structural_type = wire_type_name(&field.wire_kind);
+                let expected_type = field.type_override.as_deref().unwrap_or(&structural_type);
                 prop_assert_eq!(elem["type"].as_str().unwrap(), expected_type);
             }
         }
@@ -1111,8 +1188,8 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, (req, desc))| FieldMeta {
+                    ident: format_ident!("field_{i}"),
                     name: format!("field_{i}"),
-                    idl_type: "uint8".to_string(),
                     required: *req,
                     description: desc.clone(),
                     type_override: None,
@@ -1121,7 +1198,7 @@ mod tests {
                 .collect();
 
             let idl = build_idl(&fields);
-            let arr = idl["witness"].as_array().unwrap();
+            let arr = idl["interfaces"][0]["fields"].as_array().unwrap();
 
             for (elem, (req, _)) in arr.iter().zip(inputs.iter()) {
                 prop_assert_eq!(elem["required"].as_bool().unwrap(), *req);
@@ -1131,15 +1208,15 @@ mod tests {
         #[test]
         fn prop2_description_round_trip(desc in "[^\x00]{1,128}") {
             let fields = vec![FieldMeta {
+                ident: format_ident!("x"),
                 name: "x".to_string(),
-                idl_type: "uint8".to_string(),
                 required: true,
                 description: Some(desc.clone()),
                 type_override: None,
                 wire_kind: WireKind::FixedScalar { size: 1 },
             }];
 
-            let got = build_idl(&fields)["witness"][0]["description"]
+            let got = build_idl(&fields)["interfaces"][0]["fields"][0]["description"]
                 .as_str()
                 .expect("description must be a string")
                 .to_string();

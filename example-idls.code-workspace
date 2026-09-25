@@ -14,6 +14,9 @@
 		},
 		{
 			"path": "../idl-derive-ts"
+		},
+		{
+			"path": "../ckb-idl-spec"
 		}
 	],
 	"settings": {}
