@@ -57,6 +57,7 @@ mod tests {
 
     #[test]
     fn successful_write_returns_path() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().expect("failed to create tempdir");
         unsafe { std::env::set_var("CARGO_MANIFEST_DIR", dir.path().to_str().unwrap()) };
 
@@ -75,6 +76,7 @@ mod tests {
 
     #[test]
     fn missing_manifest_dir_returns_error() {
+        let _guard = crate::TEST_ENV_LOCK.lock().unwrap();
         unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") };
 
         let err = write_idl("{}").unwrap_err();

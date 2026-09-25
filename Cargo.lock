@@ -116,6 +116,7 @@ dependencies = [
  "ckb-std",
  "serde_json",
  "serde_json_canonicalizer",
+ "tempfile",
 ]
 
 [[package]]

@@ -11,6 +11,9 @@ mod validate;
 // Re-export FieldMeta so tests in this file can use it.
 use codegen::FieldMeta;
 
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Parse fields into the single representation used by both top-level and
 /// inner witnesses. Keeping this here prevents the two derives from accepting
 /// materially different layouts.
@@ -274,6 +277,7 @@ mod tests {
 
     /// Helper: run `impl_ckb_witness` with a real temp CARGO_MANIFEST_DIR.
     fn run_with_tempdir(input: TokenStream2) -> syn::Result<TokenStream2> {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().expect("failed to create tempdir");
         // SAFETY: tests in this module run single-threaded (no parallel test
         // threads share CARGO_MANIFEST_DIR at the same time for this crate's test binary).
@@ -352,5 +356,23 @@ mod tests {
         };
         let err = impl_ckb_witness_union(input).unwrap_err();
         assert!(err.to_string().contains("union tag `7` is already used"));
+    }
+
+    #[test]
+    fn recursive_witness_removes_stale_macro_idl() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("idl.json");
+        std::fs::write(&path, b"stale").unwrap();
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", dir.path()) };
+
+        let input: TokenStream2 = quote::quote! {
+            struct Witness { nested: Nested }
+        };
+        let result = impl_ckb_witness(input);
+        unsafe { std::env::remove_var("CARGO_MANIFEST_DIR") };
+
+        result.unwrap();
+        assert!(!path.exists());
     }
 }
