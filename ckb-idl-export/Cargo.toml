@@ -12,3 +12,4 @@ serde_json_canonicalizer = "0.3.2"
 ckb-idl-derive = { path = ".." }
 ckb-idl-types = { path = "../ckb-idl-types", features = ["ckb-contract"] }
 ckb-std = "1.1"
+tempfile = "3"

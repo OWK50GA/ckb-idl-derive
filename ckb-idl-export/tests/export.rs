@@ -46,3 +46,11 @@ fn exports_nested_union_variants() {
     assert_eq!(auth["variants"][1]["tag"], 42);
     assert_eq!(auth["variants"][1]["fields"][0]["type"], "uint16");
 }
+
+#[test]
+fn export_creates_parent_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("nested/artifacts/idl.json");
+    ckb_idl_export::export_to_path::<Witness>(&output).unwrap();
+    assert!(output.is_file());
+}
