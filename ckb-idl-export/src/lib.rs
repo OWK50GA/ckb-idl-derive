@@ -22,19 +22,25 @@ pub fn document_for<T: WitnessSchema>() -> Value {
 }
 
 pub fn export_to_path<T: WitnessSchema>(path: impl AsRef<Path>) -> io::Result<()> {
-    let bytes = serde_json::to_vec(&document_for::<T>())
-        .expect("LS-IDL schema contains only serialisable values");
+    let bytes = serde_json_canonicalizer::to_vec(&document_for::<T>())
+        .expect("IDL schema contains only canonicalisable values");
+    let path = path.as_ref();
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
     fs::write(path, bytes)
 }
 
 /// Define a tiny host-side IDL-export binary for a witness type.
 ///
 /// ```ignore
-/// // src/bin/export_idl.rs
+/// // examples/export_idl.rs
 /// ckb_idl_export::export_idl_main!(my_lock::witness::Witness);
 /// ```
 ///
-/// Run it with `cargo run --bin export_idl -- artifacts/idl-0.1.json`.
+/// Run it with `cargo run --example export_idl -- artifacts/idl-0.1.json`.
 /// Without an argument it writes `idl-0.1.json` in the current directory.
 #[macro_export]
 macro_rules! export_idl_main {

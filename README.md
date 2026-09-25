@@ -136,10 +136,10 @@ Any trailing bytes after all fields are consumed produce `WitnessError::Trailing
 
 ## Exporting nested and union schemas
 
-The proc macro writes a compact LS-IDL 0.1 document for flat witness structs.
-For a witness that contains `CkbInnerWitness` structs or `CkbWitnessUnion`
-fields, use the host-side `ckb-idl-export` crate to create the complete
-recursive LS-IDL 0.1 artifact.
+The proc macro writes a canonical IDL 0.1.0 document for flat witness structs.
+When a witness contains `CkbInnerWitness` structs or `CkbWitnessUnion` fields,
+the macro deliberately does not write an incomplete `idl.json`; use the
+host-side `ckb-idl-export` crate to create the authoritative recursive artifact.
 
 Put the witness definitions in a module that both the contract binary and a
 host export binary can import, then add:

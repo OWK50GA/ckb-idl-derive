@@ -38,6 +38,22 @@ pub enum WitnessError {
 
     /// The type ID read from the buffer does not match any known union variant
     UnknownUnionTypeId { field: &'static str, type_id: u32 },
+
+    /// Cursor arithmetic overflowed while calculating a field boundary.
+    IntegerOverflow { field: &'static str },
+
+    /// A typed vector declared zero elements, which IDL 0.1.0 forbids.
+    InvalidVectorCount { field: &'static str, count: usize },
+}
+
+pub fn checked_end(
+    cursor: usize,
+    amount: usize,
+    field: &'static str,
+) -> Result<usize, WitnessError> {
+    cursor
+        .checked_add(amount)
+        .ok_or(WitnessError::IntegerOverflow { field })
 }
 
 #[derive(Debug)]

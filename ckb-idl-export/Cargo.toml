@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 ckb-idl-types = { path = "../ckb-idl-types" }
 serde_json = "1"
+serde_json_canonicalizer = "0.3.2"
 
 [dev-dependencies]
 ckb-idl-derive = { path = ".." }
