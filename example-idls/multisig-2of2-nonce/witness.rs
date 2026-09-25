@@ -9,10 +9,16 @@ use ckb_idl_derive::CkbWitness;
 /// Args carry the two public key hashes (32 bytes each, concatenated = 64 bytes).
 #[derive(CkbWitness)]
 pub struct Witness {
-    #[witness(description = "Signature from the first co-signer")]
+    #[witness(
+        type = "secp256k1_sig",
+        description = "Signature from the first co-signer"
+    )]
     pub sig_a: [u8; 65],
 
-    #[witness(description = "Signature from the second co-signer")]
+    #[witness(
+        type = "secp256k1_sig",
+        description = "Signature from the second co-signer"
+    )]
     pub sig_b: [u8; 65],
 
     #[witness(description = "Replay-protection nonce; must match the value stored in cell data")]

@@ -1,16 +1,1 @@
-{
-  "witness": [
-    {
-      "name": "difficulty",
-      "type": "uint8",
-      "required": true,
-      "description": "Required difficulty level (leading zero bits); must match args[0]"
-    },
-    {
-      "name": "proof",
-      "type": "bytes",
-      "required": true,
-      "description": "Variable-length proof-of-work nonce bytes"
-    }
-  ]
-}
+{"idl_version":"0.1.0","interfaces":[{"encoding":{"id":"ckb-idl-linear-0.1.0"},"fields":[{"description":"Required difficulty level (leading zero bits); must match args[0]","name":"difficulty","required":true,"type":"uint8"},{"description":"Variable-length proof-of-work nonce bytes","name":"proof","required":true,"type":"bytes"}],"id":"lock_witness","kind":"witness_args.lock"}]}
