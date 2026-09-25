@@ -97,7 +97,6 @@ fn collect_field_metas(fields_named: &syn::FieldsNamed) -> syn::Result<Vec<Field
             Ok(FieldMeta {
                 ident: field_ident.clone(),
                 name: field_name,
-                idl_type,
                 required: attrs.required,
                 description: attrs.description,
                 type_override: attrs.type_override,
@@ -177,6 +176,7 @@ fn impl_ckb_witness(input: TokenStream2) -> syn::Result<TokenStream2> {
     if recursive {
         // The proc macro cannot inspect separately declared nested types.
         // `ckb-idl-export` is the authoritative artifact producer here.
+        io::remove_stale_idl()?;
         return Ok(impl_ts);
     }
 

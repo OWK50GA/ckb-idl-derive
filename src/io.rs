@@ -1,5 +1,15 @@
 use std::path::PathBuf;
 
+fn idl_path() -> syn::Result<PathBuf> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "CARGO_MANIFEST_DIR environment variable is not set",
+        )
+    })?;
+    Ok(PathBuf::from(manifest_dir).join("idl.json"))
+}
+
 /// Write `json` to `$CARGO_MANIFEST_DIR/idl.json` and return the absolute path.
 ///
 /// `CARGO_MANIFEST_DIR` is set by Cargo for every crate during proc-macro
@@ -12,14 +22,7 @@ use std::path::PathBuf;
 /// - `CARGO_MANIFEST_DIR` not set → `"CARGO_MANIFEST_DIR environment variable is not set"`
 /// - write failure               → `"failed to write IDL file to \`<path>\`: <io::Error>"`
 pub fn write_idl(json: &str) -> syn::Result<PathBuf> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| {
-        syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "CARGO_MANIFEST_DIR environment variable is not set",
-        )
-    })?;
-
-    let path = PathBuf::from(manifest_dir).join("idl.json");
+    let path = idl_path()?;
 
     std::fs::write(&path, json.as_bytes()).map_err(|e| {
         syn::Error::new(
@@ -29,6 +32,23 @@ pub fn write_idl(json: &str) -> syn::Result<PathBuf> {
     })?;
 
     Ok(path)
+}
+
+/// Remove a macro-generated flat IDL before delegating recursive artifact
+/// generation to `ckb-idl-export`. Missing files are already safe.
+pub fn remove_stale_idl() -> syn::Result<()> {
+    let path = idl_path()?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!(
+                "failed to remove stale IDL file `{}`: {error}",
+                path.display()
+            ),
+        )),
+    }
 }
 
 #[cfg(test)]

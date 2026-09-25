@@ -13,8 +13,6 @@ pub struct FieldMeta {
     /// identifier even though `name` contains its unraw IDL representation.
     pub ident: syn::Ident,
     pub name: String,
-    /// Structural IDL type derived from the Rust type (e.g. `"bytes_fixed_65"`, `"uint64"`).
-    pub idl_type: String,
     pub required: bool,
     pub description: Option<String>,
     /// Optional semantic label supplied via `#[witness(type = "...")]`.
@@ -255,7 +253,8 @@ pub fn emit_inner_impl(struct_name: &syn::Ident, fields: &[FieldMeta]) -> TokenS
         .iter()
         .map(|f| {
             let name_str = &f.name;
-            let type_str = f.type_override.as_deref().unwrap_or(f.idl_type.as_str());
+            let structural_type = wire_type_name(&f.wire_kind);
+            let type_str = f.type_override.as_deref().unwrap_or(&structural_type);
             let required = f.required;
             let desc = match &f.description {
                 Some(d) => quote! { ::core::option::Option::Some(#d) },
@@ -865,7 +864,7 @@ mod tests {
 
     fn make_field(
         name: &str,
-        idl_type: &str,
+        _idl_type: &str,
         required: bool,
         description: Option<&str>,
         wire_kind: WireKind,
@@ -873,7 +872,6 @@ mod tests {
         FieldMeta {
             ident: format_ident!("{name}"),
             name: name.to_string(),
-            idl_type: idl_type.to_string(),
             required,
             description: description.map(|s| s.to_string()),
             type_override: None,
@@ -883,14 +881,13 @@ mod tests {
 
     fn make_field_with_override(
         name: &str,
-        idl_type: &str,
+        _idl_type: &str,
         type_override: &str,
         wire_kind: WireKind,
     ) -> FieldMeta {
         FieldMeta {
             ident: format_ident!("{name}"),
             name: name.to_string(),
-            idl_type: idl_type.to_string(),
             required: true,
             description: None,
             type_override: Some(type_override.to_string()),
@@ -1129,17 +1126,19 @@ mod tests {
 
     fn arb_field_meta() -> impl Strategy<Value = FieldMeta> {
         (
-            "[a-z][a-z0-9_]{0,15}",
+            "[a-z][a-z0-9_]{0,15}".prop_filter(
+                "field names must also be valid non-keyword Rust identifiers",
+                |name| syn::parse_str::<syn::Ident>(name).is_ok(),
+            ),
             arb_idl_type(),
             any::<bool>(),
             proptest::option::of("[^\x00]{1,64}"),
             proptest::option::of("[a-z][a-z0-9-]{0,8}:[a-z][a-z0-9_]{0,12}"),
         )
             .prop_map(
-                |(name, (idl_type, wire_kind), required, description, type_override)| FieldMeta {
+                |(name, (_idl_type, wire_kind), required, description, type_override)| FieldMeta {
                     ident: syn::parse_str(&name).expect("generated field name must be valid"),
                     name,
-                    idl_type,
                     required,
                     description,
                     type_override,
@@ -1172,8 +1171,8 @@ mod tests {
                 prop_assert_eq!(elem["name"].as_str().unwrap(), field.name.as_str());
 
                 // type must be the override when present, structural otherwise
-                let expected_type = field.type_override.as_deref()
-                    .unwrap_or(field.idl_type.as_str());
+                let structural_type = wire_type_name(&field.wire_kind);
+                let expected_type = field.type_override.as_deref().unwrap_or(&structural_type);
                 prop_assert_eq!(elem["type"].as_str().unwrap(), expected_type);
             }
         }
@@ -1191,7 +1190,6 @@ mod tests {
                 .map(|(i, (req, desc))| FieldMeta {
                     ident: format_ident!("field_{i}"),
                     name: format!("field_{i}"),
-                    idl_type: "uint8".to_string(),
                     required: *req,
                     description: desc.clone(),
                     type_override: None,
@@ -1212,7 +1210,6 @@ mod tests {
             let fields = vec![FieldMeta {
                 ident: format_ident!("x"),
                 name: "x".to_string(),
-                idl_type: "uint8".to_string(),
                 required: true,
                 description: Some(desc.clone()),
                 type_override: None,
