@@ -11,14 +11,13 @@ use serde_json::{Value, json};
 
 pub fn document_for<T: WitnessSchema>() -> Value {
     json!({
-        "idl_version": "0.1",
-        "encoding": {
-            "variable_length_prefix": { "width": 4, "endian": "little" },
-            "vector_count_prefix": { "width": 4, "endian": "little" },
-            "union_tag": { "width": 4, "endian": "little" },
-            "optional_fields": "trailing_exhaustion"
-        },
-        "witness": fields_json(T::schema().fields),
+        "idl_version": "0.1.0",
+        "interfaces": [{
+            "id": "lock_witness",
+            "kind": "witness_args.lock",
+            "encoding": { "id": "ckb-idl-linear-0.1.0" },
+            "fields": fields_json(T::schema().fields),
+        }]
     })
 }
 
@@ -84,20 +83,9 @@ fn type_json(ty: &TypeSchema) -> Value {
         TypeSchema::Uint { bits } => json!({ "type": format!("uint{bits}") }),
         TypeSchema::FixedBytes { length } => json!({ "type": format!("bytes_fixed_{length}") }),
         TypeSchema::Bytes => json!({ "type": "bytes" }),
-        TypeSchema::Optional { inner } => {
-            let mut value = type_json(inner());
-            value
-                .as_object_mut()
-                .unwrap()
-                .insert("optional".into(), json!(true));
-            value
-        }
-        TypeSchema::Vector {
-            element,
-            count_prefix_bits,
-        } => json!({
+        TypeSchema::Optional { inner } => type_json(inner()),
+        TypeSchema::Vector { element, .. } => json!({
             "type": "vector",
-            "count_prefix_bits": count_prefix_bits,
             "items": type_json(element()),
         }),
         TypeSchema::Struct { schema } => struct_json(schema()),
@@ -110,9 +98,10 @@ fn struct_json(schema: &StructSchema) -> Value {
 }
 
 fn union_json(schema: &UnionSchema) -> Value {
-    let variants: Vec<Value> = schema
-        .variants
-        .iter()
+    let mut variants: Vec<_> = schema.variants.iter().collect();
+    variants.sort_by_key(|variant| variant.tag);
+    let variants: Vec<Value> = variants
+        .into_iter()
         .map(|variant| {
             json!({
                 "tag": variant.tag,

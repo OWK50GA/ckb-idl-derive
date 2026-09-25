@@ -19,11 +19,8 @@ fn collect_field_metas(fields_named: &syn::FieldsNamed) -> syn::Result<Vec<Field
         .named
         .iter()
         .map(|field| {
-            let field_name = field
-                .ident
-                .as_ref()
-                .expect("named field has no ident")
-                .to_string();
+            let field_ident = field.ident.as_ref().expect("named field has no ident");
+            let field_name = attr::idl_identifier(field_ident)?;
             let attrs = attr::parse_field_attrs(field)?;
             let idl_type = registry::map_type(&field.ty, &field_name)?;
             let wire_kind = registry::map_wire_kind(&field.ty)
@@ -45,6 +42,10 @@ fn collect_field_metas(fields_named: &syn::FieldsNamed) -> syn::Result<Vec<Field
             } else {
                 wire_kind
             };
+
+            if let Some(label) = &attrs.type_override {
+                attr::validate_semantic_type(label, &idl_type, field_ident.span())?;
+            }
 
             let is_optional_type = matches!(&wire_kind, registry::WireKind::Optional(_));
             if is_optional_type && attrs.required {
@@ -198,6 +199,10 @@ fn impl_ckb_witness_union(input: TokenStream2) -> syn::Result<TokenStream2> {
         .iter()
         .map(attr::parse_union_variant_tag)
         .collect::<syn::Result<Vec<_>>>()?;
+
+    for variant in &data_enum.variants {
+        attr::idl_identifier(&variant.ident)?;
+    }
 
     for (index, tag) in tags.iter().enumerate() {
         if tags[..index].contains(tag) {

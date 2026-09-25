@@ -34,9 +34,10 @@ struct Witness {
 #[test]
 fn exports_nested_union_variants() {
     let document = document_for::<Witness>();
-    let digest = &document["witness"][0];
-    let auth = &document["witness"][1];
-    assert_eq!(document["idl_version"], "0.1");
+    let fields = &document["interfaces"][0]["fields"];
+    let digest = &fields[0];
+    let auth = &fields[1];
+    assert_eq!(document["idl_version"], "0.1.0");
     assert_eq!(digest["type"], "blake2b_hash");
     assert_eq!(digest["wire_type"], "bytes_fixed_32");
     assert_eq!(auth["type"], "union");

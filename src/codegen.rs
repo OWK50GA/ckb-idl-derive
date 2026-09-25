@@ -33,12 +33,12 @@ pub struct FieldMeta {
 /// Produces:
 /// ```json
 /// {
-///   "idl_version": "0.1",
-///   "encoding": {
-///     "variable_length_prefix": { "width": 4, "endian": "little" },
-///     "optional_fields": "trailing_exhaustion"
-///   },
-///   "witness": [ { "name": "...", "type": "...", "required": true/false }, ... ]
+///   "idl_version": "0.1.0",
+///   "interfaces": [{
+///     "id": "lock_witness", "kind": "witness_args.lock",
+///     "encoding": { "id": "ckb-idl-linear-0.1.0" },
+///     "fields": [ { "name": "...", "type": "...", "required": true/false } ]
+///   }]
 /// }
 /// ```
 /// The `"description"` key is included only when `Some`.
@@ -47,18 +47,19 @@ pub fn build_idl(fields: &[FieldMeta]) -> Value {
     let array: Vec<Value> = fields
         .iter()
         .map(|f| {
-            let type_str = f.type_override.as_deref().unwrap_or(f.idl_type.as_str());
-            // Union fields get "type": "union" regardless of any override.
-            let effective_type = if matches!(&f.wire_kind, WireKind::Union(_)) {
-                "union"
-            } else {
-                type_str
-            };
+            let structural_type = wire_type_name(&f.wire_kind);
+            let effective_type = f.type_override.as_deref().unwrap_or(&structural_type);
             let mut obj = json!({
                 "name": f.name,
                 "type": effective_type,
                 "required": f.required,
             });
+            if f.type_override.is_some() {
+                obj["wire_type"] = json!(structural_type);
+            }
+            if let WireKind::VecOf(inner) = &f.wire_kind {
+                obj["items"] = json!({ "type": wire_type_name(inner) });
+            }
             if let Some(desc) = &f.description {
                 obj["description"] = json!(desc);
             }
@@ -67,13 +68,26 @@ pub fn build_idl(fields: &[FieldMeta]) -> Value {
         .collect();
 
     json!({
-        "idl_version": "0.1",
-        "encoding": {
-            "variable_length_prefix": { "width": 4, "endian": "little" },
-            "optional_fields": "trailing_exhaustion"
-        },
-        "witness": array
+        "idl_version": "0.1.0",
+        "interfaces": [{
+            "id": "lock_witness",
+            "kind": "witness_args.lock",
+            "encoding": { "id": "ckb-idl-linear-0.1.0" },
+            "fields": array
+        }]
     })
+}
+
+fn wire_type_name(kind: &WireKind) -> String {
+    match kind {
+        WireKind::FixedScalar { size } => format!("uint{}", size * 8),
+        WireKind::FixedArray { size } => format!("bytes_fixed_{size}"),
+        WireKind::VarBytes => "bytes".into(),
+        WireKind::Optional(inner) => wire_type_name(inner),
+        WireKind::Struct(_) => "struct".into(),
+        WireKind::VecOf(_) => "vector".into(),
+        WireKind::Union(_) => "union".into(),
+    }
 }
 
 /// Emit a `pub const _CKB_WITNESS_IDL_PATH: &str = "<path>";` token stream.
@@ -861,33 +875,21 @@ mod tests {
             None,
             WireKind::FixedArray { size: 65 },
         )]);
-        assert!(idl["witness"].is_array());
+        assert!(idl["interfaces"][0]["fields"].is_array());
     }
 
     #[test]
     fn top_level_idl_version_is_point_one() {
         let idl = build_idl(&[]);
-        assert_eq!(idl["idl_version"].as_str().unwrap(), "0.1");
+        assert_eq!(idl["idl_version"].as_str().unwrap(), "0.1.0");
     }
 
     #[test]
     fn top_level_encoding_block_is_present() {
         let idl = build_idl(&[]);
         assert_eq!(
-            idl["encoding"]["variable_length_prefix"]["width"]
-                .as_u64()
-                .unwrap(),
-            4
-        );
-        assert_eq!(
-            idl["encoding"]["variable_length_prefix"]["endian"]
-                .as_str()
-                .unwrap(),
-            "little"
-        );
-        assert_eq!(
-            idl["encoding"]["optional_fields"].as_str().unwrap(),
-            "trailing_exhaustion"
+            idl["interfaces"][0]["encoding"]["id"],
+            "ckb-idl-linear-0.1.0"
         );
     }
 
@@ -904,7 +906,13 @@ mod tests {
             ),
             make_field("c", "bytes", true, Some("blob"), WireKind::VarBytes),
         ];
-        assert_eq!(build_idl(&fields)["witness"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            build_idl(&fields)["interfaces"][0]["fields"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
     }
 
     #[test]
@@ -925,7 +933,10 @@ mod tests {
                 WireKind::FixedScalar { size: 8 },
             ),
         ];
-        let arr = build_idl(&fields)["witness"].as_array().unwrap().clone();
+        let arr = build_idl(&fields)["interfaces"][0]["fields"]
+            .as_array()
+            .unwrap()
+            .clone();
         assert_eq!(arr[0]["name"], "first");
         assert_eq!(arr[1]["name"], "second");
     }
@@ -939,7 +950,11 @@ mod tests {
             None,
             WireKind::FixedScalar { size: 1 },
         )]);
-        assert!(idl["witness"][0].get("description").is_none());
+        assert!(
+            idl["interfaces"][0]["fields"][0]
+                .get("description")
+                .is_none()
+        );
     }
 
     #[test]
@@ -951,12 +966,32 @@ mod tests {
             Some("my desc"),
             WireKind::FixedScalar { size: 1 },
         )]);
-        assert_eq!(idl["witness"][0]["description"], "my desc");
+        assert_eq!(idl["interfaces"][0]["fields"][0]["description"], "my desc");
     }
 
     #[test]
     fn empty_fields_produces_empty_array() {
-        assert_eq!(build_idl(&[])["witness"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            build_idl(&[])["interfaces"][0]["fields"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn typed_vector_uses_structured_items() {
+        let idl = build_idl(&[make_field(
+            "values",
+            "vec_of_uint64",
+            true,
+            None,
+            WireKind::VecOf(Box::new(WireKind::FixedScalar { size: 8 })),
+        )]);
+        let field = &idl["interfaces"][0]["fields"][0];
+        assert_eq!(field["type"], "vector");
+        assert_eq!(field["items"]["type"], "uint64");
     }
 
     // ── type_override tests ───────────────────────────────────────────────────
@@ -970,7 +1005,11 @@ mod tests {
             WireKind::FixedArray { size: 65 },
         )]);
         // IDL should show the semantic label, not the structural default.
-        assert_eq!(idl["witness"][0]["type"], "secp256k1_sig");
+        assert_eq!(idl["interfaces"][0]["fields"][0]["type"], "secp256k1_sig");
+        assert_eq!(
+            idl["interfaces"][0]["fields"][0]["wire_type"],
+            "bytes_fixed_65"
+        );
     }
 
     #[test]
@@ -982,7 +1021,7 @@ mod tests {
             None,
             WireKind::FixedArray { size: 65 },
         )]);
-        assert_eq!(idl["witness"][0]["type"], "bytes_fixed_65");
+        assert_eq!(idl["interfaces"][0]["fields"][0]["type"], "bytes_fixed_65");
     }
 
     #[test]
@@ -990,10 +1029,13 @@ mod tests {
         let idl = build_idl(&[make_field_with_override(
             "proof",
             "bytes_fixed_32",
-            "my_custom_proof",
+            "my-project:custom_proof",
             WireKind::FixedArray { size: 32 },
         )]);
-        assert_eq!(idl["witness"][0]["type"], "my_custom_proof");
+        assert_eq!(
+            idl["interfaces"][0]["fields"][0]["type"],
+            "my-project:custom_proof"
+        );
     }
 
     #[test]
@@ -1009,13 +1051,16 @@ mod tests {
             make_field_with_override(
                 "b",
                 "bytes_fixed_64",
-                "bls12_381_half",
+                "my-project:bls12_381_half",
                 WireKind::FixedArray { size: 64 },
             ),
         ];
         let idl = build_idl(&fields);
-        assert_eq!(idl["witness"][0]["type"], "schnorr_sig");
-        assert_eq!(idl["witness"][1]["type"], "bls12_381_half");
+        assert_eq!(idl["interfaces"][0]["fields"][0]["type"], "schnorr_sig");
+        assert_eq!(
+            idl["interfaces"][0]["fields"][1]["type"],
+            "my-project:bls12_381_half"
+        );
         // wire_kind is unchanged — both would decode 64 bytes identically.
     }
 
@@ -1054,7 +1099,7 @@ mod tests {
             arb_idl_type(),
             any::<bool>(),
             proptest::option::of("[^\x00]{1,64}"),
-            proptest::option::of("[a-z][a-z0-9_]{0,20}"),
+            proptest::option::of("[a-z][a-z0-9-]{0,8}:[a-z][a-z0-9_]{0,12}"),
         )
             .prop_map(
                 |(name, (idl_type, wire_kind), required, description, type_override)| FieldMeta {
@@ -1077,13 +1122,11 @@ mod tests {
             let idl = build_idl(&fields);
 
             // Top-level shape
-            prop_assert_eq!(idl["idl_version"].as_str().unwrap(), "0.1");
-            prop_assert_eq!(idl["encoding"]["variable_length_prefix"]["width"].as_u64().unwrap(), 4);
-            prop_assert_eq!(idl["encoding"]["variable_length_prefix"]["endian"].as_str().unwrap(), "little");
-            prop_assert_eq!(idl["encoding"]["optional_fields"].as_str().unwrap(), "trailing_exhaustion");
+            prop_assert_eq!(idl["idl_version"].as_str().unwrap(), "0.1.0");
+            prop_assert_eq!(idl["interfaces"][0]["encoding"]["id"].as_str().unwrap(), "ckb-idl-linear-0.1.0");
 
-            let arr = idl["witness"].as_array()
-                .expect("\"witness\" must be a JSON array");
+            let arr = idl["interfaces"][0]["fields"].as_array()
+                .expect("interface fields must be a JSON array");
 
             prop_assert_eq!(arr.len(), n);
 
@@ -1121,7 +1164,7 @@ mod tests {
                 .collect();
 
             let idl = build_idl(&fields);
-            let arr = idl["witness"].as_array().unwrap();
+            let arr = idl["interfaces"][0]["fields"].as_array().unwrap();
 
             for (elem, (req, _)) in arr.iter().zip(inputs.iter()) {
                 prop_assert_eq!(elem["required"].as_bool().unwrap(), *req);
@@ -1139,7 +1182,7 @@ mod tests {
                 wire_kind: WireKind::FixedScalar { size: 1 },
             }];
 
-            let got = build_idl(&fields)["witness"][0]["description"]
+            let got = build_idl(&fields)["interfaces"][0]["fields"][0]["description"]
                 .as_str()
                 .expect("description must be a string")
                 .to_string();
