@@ -42,4 +42,8 @@ fn nested_inner_witness_decodes_a_complete_buffer() {
     assert_eq!(inner_fields[0].idl_type, "bytes_fixed_3");
     assert_eq!(inner_fields[1].name, "unlock_after_ms");
     assert_eq!(inner_fields[1].idl_type, "uint64");
+
+    let envelope_fields = Envelope::idl_fields();
+    assert_eq!(envelope_fields[1].name, "authorization");
+    assert_eq!(envelope_fields[1].idl_type, "struct");
 }

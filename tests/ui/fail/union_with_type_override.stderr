@@ -1,0 +1,5 @@
+error: field `authorization` cannot combine `#[witness(union)]` with a semantic type override
+ --> tests/ui/fail/union_with_type_override.rs:8:20
+  |
+8 |     authorization: Authorization,
+  |                    ^^^^^^^^^^^^^
