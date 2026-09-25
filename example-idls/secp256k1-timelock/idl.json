@@ -1,16 +1,1 @@
-{
-  "witness": [
-    {
-      "name": "signature",
-      "type": "secp256k1_sig",
-      "required": true,
-      "description": "65-byte secp256k1 ECDSA signature (r || s || v)"
-    },
-    {
-      "name": "unlock_time",
-      "type": "uint64",
-      "required": true,
-      "description": "Unix timestamp (u64 LE) before which the cell cannot be spent"
-    }
-  ]
-}
+{"idl_version":"0.1.0","interfaces":[{"encoding":{"id":"ckb-idl-linear-0.1.0"},"fields":[{"description":"65-byte secp256k1 ECDSA signature (r || s || v)","name":"signature","required":true,"type":"secp256k1_sig","wire_type":"bytes_fixed_65"},{"description":"Unix timestamp (u64 LE) before which the cell cannot be spent","name":"unlock_time","required":true,"type":"uint64"}],"id":"lock_witness","kind":"witness_args.lock"}]}

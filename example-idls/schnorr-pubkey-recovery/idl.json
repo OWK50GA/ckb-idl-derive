@@ -1,16 +1,1 @@
-{
-  "witness": [
-    {
-      "name": "signature",
-      "type": "schnorr_sig",
-      "required": true,
-      "description": "64-byte Schnorr signature (R || s)"
-    },
-    {
-      "name": "pubkey",
-      "type": "secp256k1_pubkey",
-      "required": false,
-      "description": "Compressed secp256k1 public key (33 bytes); required only when not stored in args"
-    }
-  ]
-}
+{"idl_version":"0.1.0","interfaces":[{"encoding":{"id":"ckb-idl-linear-0.1.0"},"fields":[{"description":"64-byte Schnorr signature (R || s)","name":"signature","required":true,"type":"schnorr_sig","wire_type":"bytes_fixed_64"},{"description":"Compressed secp256k1 public key (33 bytes); required only when not stored in args","name":"pubkey","required":false,"type":"secp256k1_pubkey","wire_type":"bytes_fixed_33"}],"id":"lock_witness","kind":"witness_args.lock"}]}

@@ -11,7 +11,10 @@ use ckb_idl_derive::CkbWitness;
 /// bytecode can be reused for cells with different unlock times.
 #[derive(CkbWitness)]
 pub struct Witness {
-    #[witness(description = "65-byte secp256k1 ECDSA signature (r || s || v)")]
+    #[witness(
+        type = "secp256k1_sig",
+        description = "65-byte secp256k1 ECDSA signature (r || s || v)"
+    )]
     pub signature: [u8; 65],
 
     #[witness(description = "Unix timestamp (u64 LE) before which the cell cannot be spent")]
